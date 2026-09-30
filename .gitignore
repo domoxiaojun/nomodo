@@ -1,0 +1,15 @@
+.venv/
+.env
+.env.*
+!.env.example
+data/
+downloads/
+logs/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.session
+*.session-journal
+dist/
