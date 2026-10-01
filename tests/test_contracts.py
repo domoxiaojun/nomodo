@@ -6,6 +6,7 @@ from pathlib import Path
 
 import httpx
 import pytest
+from openai.types.shared import ReasoningEffort
 from pydantic import SecretStr
 
 from simpread.config import Settings
@@ -52,7 +53,8 @@ def test_notion_credential_encryption_and_export_state(tmp_path: Path) -> None:
     recovered.close()
 
 
-def test_responses_payload_uses_store_false() -> None:
+@pytest.mark.parametrize("effort", [None, "none", "minimal", "low", "medium", "high", "xhigh", "max"])
+def test_responses_payload_uses_store_false(effort: ReasoningEffort) -> None:
     seen: dict = {}
 
     async def handler(request: httpx.Request) -> httpx.Response:
@@ -95,12 +97,18 @@ def test_responses_payload_uses_store_false() -> None:
         )
 
     async def run() -> None:
-        client = ResponsesClient("secret", "model", "identity", transport=httpx.MockTransport(handler))
+        client = ResponsesClient(
+            "secret", "model", "identity", transport=httpx.MockTransport(handler), reasoning_effort=effort
+        )
         assert (await client.enhance(normalize_worker_result(result_payload()), "summary", 1)).summary == "ok"
         await client.close()
 
     asyncio.run(run())
     assert seen["store"] is False
+    if effort is None:
+        assert "reasoning" not in seen
+    else:
+        assert seen["reasoning"] == {"effort": effort}
     assert seen["safety_identifier"]
     assert "secret" not in json.dumps(seen)
 

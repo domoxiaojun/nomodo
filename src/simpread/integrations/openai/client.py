@@ -9,7 +9,8 @@ import re
 from typing import TypeVar
 
 import httpx
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, omit
+from openai.types.shared import ReasoningEffort
 from pydantic import BaseModel
 
 from simpread.domain import Article
@@ -64,8 +65,10 @@ class ResponsesClient:
         max_input_chars: int = 120000,
         max_output_tokens: int = 4096,
         transport: httpx.AsyncBaseTransport | None = None,
+        reasoning_effort: ReasoningEffort = None,
     ) -> None:
         self.model, self.identity_key = model, identity_key
+        self.reasoning_effort = reasoning_effort
         self.max_input_chars, self.max_output_tokens = max_input_chars, max_output_tokens
         self.client = AsyncOpenAI(
             api_key=api_key,
@@ -85,6 +88,7 @@ class ResponsesClient:
         try:
             response = await self.client.responses.parse(
                 model=self.model,
+                reasoning={"effort": self.reasoning_effort} if self.reasoning_effort is not None else omit,
                 store=False,
                 safety_identifier=identifier,
                 parallel_tool_calls=False,

@@ -5,12 +5,42 @@ from unittest.mock import AsyncMock
 
 import httpx
 import pytest
+from pydantic import SecretStr
 from test_bot_oauth import message, settings
 
 from simpread.domain import normalize_worker_result
 from simpread.integrations.openai import LLMError, ResponsesClient
 from simpread.integrations.openai.client import sanitize
 from simpread.telegram.app import App
+
+
+@pytest.mark.parametrize("value", ["", "none", "minimal", "low", "medium", "high", "xhigh", "max", "invalid"])
+def test_reasoning_environment_reaches_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, value: str) -> None:
+    monkeypatch.setenv("LLM_REASONING_EFFORT", value)
+    if value == "invalid":
+        with pytest.raises(ValueError, match="llm_reasoning_effort"):
+            settings(tmp_path, _env_file=None)
+        return
+
+    async def run() -> None:
+        app = App(settings(
+            tmp_path,
+            _env_file=None,
+            llm_enabled=True,
+            openai_api_key=SecretStr("fixture"),
+            openai_model="fixture",
+            llm_input_usd_per_million=1,
+            llm_output_usd_per_million=1,
+        ))
+        app.pending.preferences(1, {"llm": True})
+        client = app.llm_client(1, "body")
+        try:
+            assert client.reasoning_effort == (value or None)
+        finally:
+            await client.close()
+            await app.close()
+
+    asyncio.run(run())
 
 
 @pytest.mark.parametrize("mode", ["timeout", "rate_limit", "invalid"])

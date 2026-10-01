@@ -48,6 +48,8 @@ LLM 默认关闭，既需要 `LLM_ENABLED=true`，也需要用户 `/settings llm
 
 ## 数据与边界
 
+`LLM_REASONING_EFFORT=low` 设置全局思考强度，适用于摘要、翻译及工作流规划，也作用于用户自选模型。留空或不设置时不发送 `reasoning`，沿用模型默认值。可填写 SDK 支持的 `none`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max`；实际支持范围取决于模型，例如 `gpt-6.1-sol` 不支持 `none` 和 `minimal`。未知值会在启动时被拒绝，模型不支持的组合会触发现有 LLM 失败回退。Compose 自动从根目录 `.env` 读取此项，修改后需重建 Reader 容器使环境变量生效。
+
 - Article 层使用 PyPI ParseHub 的纯本地 matcher，再要求平台存在于 Worker 能力快照；不调用本地 ParseHub parse/download。版本必须与 Worker 一致。
 - Worker 返回的结果经过字段白名单过滤。旧 Worker 即使返回内部路径，Reader 也不保存或传给模型。
 - Pending Article、过滤后的原始结果和派生内容保存在 `data/reader/reader.sqlite3`；默认 30 分钟过期，维护循环续租，过期/取消释放。网络故障时最终由 Worker TTL 回收。

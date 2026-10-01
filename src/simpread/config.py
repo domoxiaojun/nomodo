@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from openai.types.shared import ReasoningEffort
 from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -39,6 +40,7 @@ class Settings(BaseSettings):
     llm_enabled: bool = False
     openai_api_key: SecretStr = SecretStr("")
     openai_model: str = ""
+    llm_reasoning_effort: ReasoningEffort = None
     openai_timeout_seconds: float = Field(default=60, gt=0, le=180)
     llm_max_input_chars: int = Field(default=120000, gt=0, le=120000)
     llm_max_output_tokens: int = Field(default=4096, ge=100, le=16384)
