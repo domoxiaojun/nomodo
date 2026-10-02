@@ -41,6 +41,9 @@ def message(uid: int = 1, chat_id: int = 1, text: str = "", kind: str = "private
         text=text,
         reply_text=AsyncMock(),
         reply_document=AsyncMock(),
+        reply_rich=AsyncMock(),
+        edit_text=AsyncMock(),
+        edit_reply_markup=AsyncMock(),
         reply_photo=AsyncMock(),
         reply_video=AsyncMock(),
         delete=AsyncMock(),
@@ -129,11 +132,11 @@ def test_whitelist_mixed_urls_and_no_implicit_writes(tmp_path: Path) -> None:
         msg = message(text="https://unsupported.example/a https://youtube.com/watch?v=a")
         await app.dispatch(None, msg)
         assert app.pending.count(1) == 1
-        assert any("成功 1 / 2" in c.args[0] for c in msg.reply_text.call_args_list)
+        assert any("成功 1/2" in c.args[0] for c in msg.reply_text.return_value.edit_text.call_args_list)
         stranger = message(uid=99, text="https://youtube.com/watch?v=a")
         await app.dispatch(None, stranger)
         assert cast(Any, app.worker).prepare.await_count == 2
-        stranger.reply_text.assert_not_awaited()
+        stranger.reply_text.assert_awaited_once()
         await app.close()
 
     asyncio.run(run())
@@ -231,7 +234,7 @@ def test_private_onboarding_preserves_whitelist(tmp_path: Path) -> None:
             group.reply_text.assert_not_awaited()
             stranger = message(uid=99, text='/read https://youtube.com/watch?v=a')
             await app.dispatch(None, stranger)
-            stranger.reply_text.assert_not_awaited()
+            stranger.reply_text.assert_awaited_once()
             cast(Any, app.worker).prepare.assert_not_awaited()
             assert app.pending.count(99) == 0
         finally:

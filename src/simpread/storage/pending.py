@@ -67,6 +67,13 @@ class PendingStore:
         ).fetchone()
         return str(row[0]) if row else None
 
+    def recent(self, user_id: int, chat_id: int) -> list[dict[str, Any]]:
+        rows = self.db.execute(
+            "SELECT id,article FROM articles WHERE user_id=? AND chat_id=? AND expires>? ORDER BY created DESC",
+            (user_id, chat_id, time.time()),
+        )
+        return [{"id": row["id"], "title": json.loads(row["article"]).get("title", "")} for row in rows]
+
     def entries(self) -> list[dict[str, Any]]:
         return [dict(r) for r in self.db.execute("SELECT id,user_id,chat_id,leases,expires FROM articles")]
 

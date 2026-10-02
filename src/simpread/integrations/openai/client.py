@@ -9,7 +9,7 @@ import re
 from typing import TypeVar
 
 import httpx
-from openai import AsyncOpenAI, omit
+from openai import APITimeoutError, AsyncOpenAI, AuthenticationError, omit
 from openai.types.shared import ReasoningEffort
 from pydantic import BaseModel
 
@@ -100,6 +100,10 @@ class ResponsesClient:
             if response.status != "completed" or response.output_parsed is None:
                 raise LLMError("invalid_output")
             return response.output_parsed
+        except AuthenticationError:
+            raise LLMError("llm_auth_failed") from None
+        except APITimeoutError:
+            raise LLMError("llm_timeout") from None
         except Exception:
             raise LLMError("llm_failed") from None
 

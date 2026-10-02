@@ -2,7 +2,10 @@ import re
 
 from simpread.domain import Article
 
-ACTIONS = {"save", "summary", "title", "tags", "translate", "normalize_markdown", "markdown", "html"}
+ACTIONS = {
+    "save", "summary", "title", "tags", "translate", "normalize_markdown",
+    "markdown", "html", "open", "more", "back", "export", "ai_file",
+}
 
 
 def make_callback(article_id: str, action: str) -> str:

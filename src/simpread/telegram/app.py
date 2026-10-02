@@ -23,16 +23,22 @@ from simpread.integrations.openai import ActionPlan, Executor, LLMError, Respons
 from simpread.integrations.openai.client import redact, sanitize
 from simpread.oauth.server import OAuthServer
 from simpread.storage import PendingStore
-from simpread.worker import WorkerClient, WorkerError, extract_urls
+from simpread.worker import WorkerClient, WorkerError
 
-from .callbacks import make_callback, parse_callback, preview, truncate
-from .media import send_preview
+from .callbacks import make_callback, parse_callback, truncate
+from .input import message_urls
+from .media import DeliveryUncertain, send_preview
+from .presentation import ai_rich
+from .ui import Panel, Progress, buttons, menu
 
 BOT_COMMANDS = [
     BotCommand("start", "开始使用与授权说明"),
     BotCommand("help", "查看使用帮助"),
     BotCommand("id", "查看自己的 Telegram 用户 ID"),
     BotCommand("read", "解析链接：/read <网址>"),
+    BotCommand("articles", "查看最近解析的文章"),
+    BotCommand("platforms", "查看当前支持的平台"),
+    BotCommand("translate", "翻译最近文章"),
     BotCommand("cancel", "取消任务或清理最近文章"),
     BotCommand("settings", "查看个人设置"),
     BotCommand("summary", "摘要最近文章（需启用 AI）"),
@@ -41,7 +47,15 @@ BOT_COMMANDS = [
 ]
 
 MESSAGES = {
-    "unsupported_url": "暂不支持该平台。",
+    "unsupported_url": "暂不支持这个链接，请查看支持的平台后重试。",
+    "too_many_links": "一次最多处理 10 个链接，请分批发送。",
+    "worker_unavailable": "解析服务暂时无法连接，请稍后重新发送链接。",
+    "parse_failed": "这次解析未成功；请确认链接可公开访问，或检查平台登录凭据。",
+    "llm_failed": "AI 暂时未返回有效结果。原文已保留，可重试或导出原文。",
+    "llm_auth_failed": "AI Key 无效或已过期，请管理员更新接口配置。",
+    "llm_timeout": "AI 生成超时，原文已保留；可以重试或换一篇较短的文章。",
+    "input_too_large": "文章超出当前 AI 处理上限，仍可导出完整原文。",
+    "llm_config_incomplete": "AI 服务尚未配置完成，请联系管理员。",
     "worker_version_mismatch": "Worker 与 Reader 的 ParseHub 版本不匹配。",
     "authorization_required": "请先 /notion connect 授权。",
     "authorization_expired": "Notion 授权已失效，请重新连接。",
@@ -57,8 +71,8 @@ def private(message: Any) -> bool:
     return message is not None and message.chat.type in {"private", enums.ChatType.PRIVATE}
 
 
-async def reply(message: Any, text: str, **kwargs: Any) -> None:
-    await message.reply_text(
+async def reply(message: Any, text: str, **kwargs: Any) -> Any:
+    return await message.reply_text(
         truncate(text, 3800),
         parse_mode=enums.ParseMode.DISABLED,
         link_preview_options=LinkPreviewOptions(is_disabled=True),
@@ -85,6 +99,7 @@ class App:
         self.oauth = OAuthServer(settings, self.secrets) if settings.notion_client_id and self.secrets else None
         self.locks: dict[int, asyncio.Lock] = {}
         self.active: dict[int, asyncio.Task[Any]] = {}
+        self.active_chat: dict[int, int] = {}
         self.bot: Any = None
         self.capacity = asyncio.Semaphore(2)
 
@@ -94,33 +109,73 @@ class App:
         if self.secrets:
             self.secrets.close()
 
-    def keyboard(self, key: str) -> InlineKeyboardMarkup:
-        actions = [
-            ("保存到 Notion", "save"),
-            ("生成摘要", "summary"),
-            ("生成标签", "tags"),
-            ("翻译", "translate"),
-            ("标题建议", "title"),
-            ("整理排版", "normalize_markdown"),
-            ("Markdown", "markdown"),
-            ("HTML", "html"),
-        ]
-        return InlineKeyboardMarkup(
-            [
-                [
-                    InlineKeyboardButton(label, callback_data=make_callback(key, action))
-                    for label, action in actions[i : i + 2]
-                ]
-                for i in range(0, len(actions), 2)
-            ]
-        )
+    def keyboard(self, key: str, user_id: int = 0, *, private_chat: bool = True,
+                 expanded: bool = False) -> InlineKeyboardMarkup:
+        actions: list[tuple[str, str]] = []
+        if private_chat and self.settings.llm_enabled and self.pending.preferences(user_id).get("llm"):
+            actions.extend([("摘要", "summary"), ("翻译", "translate")])
+        if private_chat and self.notion:
+            actions.append(("保存到 Notion", "save"))
+        actions.append(("导出全文", "export"))
+        if expanded and private_chat and self.settings.llm_enabled:
+            actions.extend([("提取标签", "tags"), ("标题建议", "title"), ("整理排版", "normalize_markdown")])
+        if private_chat and (self.settings.llm_enabled or self.pending.derived(user_id, key)):
+            actions.append(("收起" if expanded else "更多操作", "back" if expanded else "more"))
+        return buttons([
+            [(label, make_callback(key, action)) for label, action in actions[i:i + 2]]
+            for i in range(0, len(actions), 2)
+        ])
+
+    async def home(self, user_id: int, message: Any, *, help_page: bool = False) -> None:
+        if help_page:
+            text = (
+                "使用指南\n\n"
+                "1. 直接发送链接或带链接的分享消息，可一次发送多个链接。\n"
+                "2. 每篇文章以一条富消息展示，包含正文、媒体和操作按钮。\n"
+                "3. 点击「摘要」「翻译」处理内容，点击「导出全文」获取 Markdown / HTML。\n"
+                "4. 点击「最近文章」重新打开仍在有效期内的内容。\n\n"
+                "AI 和 Notion 仅在私聊使用。长文与超限媒体会在结果内提示，不逐个刷屏。\n"
+                "处理时可以点击「取消任务」；Notion 写入前会明确要求确认。"
+            )
+        else:
+            ai = "已开启" if self.settings.llm_enabled and self.pending.preferences(user_id).get("llm") else "已关闭"
+            notion = "可连接" if self.oauth else "管理员尚未配置"
+            text = ("阅读助手\n\n发送一个文章或视频链接，开始解析。\n"
+                    "结果中可直接阅读、查看媒体、生成摘要或导出全文。\n\n"
+                    f"AI：{ai} · Notion：{notion}\n"
+                    f"文章与按钮有效期约 {self.settings.reader_pending_ttl // 60} 分钟。")
+        if not private(message):
+            text += "\n\nAI、设置和 Notion 操作请私聊机器人。"
+        await reply(message, text, reply_markup=menu(user_id) if private(message) else None)
+
+    async def articles(self, user_id: int, message: Any, offset: int = 0) -> None:
+        entries = self.pending.recent(user_id, message.chat.id)
+        page = entries[offset:offset + 8]
+        rows = [[(truncate(item["title"] or "无标题", 42), make_callback(item["id"], "open"))] for item in page]
+        nav = []
+        if offset:
+            nav.append(("上一页", f"ui:{user_id}:articles:{max(0, offset - 8)}"))
+        if offset + 8 < len(entries):
+            nav.append(("下一页", f"ui:{user_id}:articles:{offset + 8}"))
+        if nav:
+            rows.append(nav)
+        rows.append([("返回首页", f"ui:{user_id}:home")])
+        text = (f"最近文章 · {len(entries)} 篇\n点击标题重新打开文章。" if entries else
+                "还没有可用文章。\n请直接发送链接，解析后会出现在这里。")
+        await reply(message, text, reply_markup=buttons(rows))
+
+    async def platforms(self, user_id: int, message: Any) -> None:
+        snapshot = await self.worker.capabilities()
+        await reply(message, "当前支持的平台\n\n" + snapshot.names +
+                    "\n\n直接发送原文链接即可。部分平台需要管理员配置 Cookie，登录受限内容可能无法解析。",
+                    reply_markup=menu(user_id))
 
     async def approval(self, message: Any, user_id: int, payload: dict[str, Any], description: str) -> None:
         key = self.pending.approve(user_id, message.chat.id, payload)
         await reply(
             message,
             description,
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("确认执行", callback_data=f"confirm:{key}")]]),
+            reply_markup=buttons([[("确认执行", f"confirm:{key}"), ("取消", f"dismiss:{key}")]]),
         )
 
     def selected(self, user_id: int, message: Any, key: str | None = None) -> tuple[str, Article, tuple[str, ...]]:
@@ -131,42 +186,53 @@ class App:
         return key, result[0], result[1]
 
     async def read(self, user_id: int, message: Any, urls: list[str]) -> None:
+        progress = Progress(message, user_id)
         succeeded = 0
-        for url in urls:
+        failures: list[str] = []
+        for index, url in enumerate(urls, 1):
             prepared = None
             key = None
             try:
+                await progress.update(f"正在解析 {index}/{len(urls)}\n{url}\n页面和媒体准备可能需要一些时间。")
                 if self.pending.count(user_id) >= self.settings.reader_max_pending_per_user:
-                    await reply(message, "待处理内容过多，请等待过期或使用 /cancel 清理最近文章。")
+                    failures.append("待处理文章已达上限，请等待过期或使用 /cancel 清理最近文章。")
                     break
                 async with self.capacity:
                     prepared = await self.worker.prepare(url)
-                key = self.pending.put(
-                    user_id, message.chat.id, prepared.article, prepared.lease_ids, prepared.raw_result
-                )
-                await reply(message, preview(prepared.article), reply_markup=self.keyboard(key))
-                missing = await send_preview(message, prepared.article, self.worker)
-                if missing:
-                    await reply(message, f"{missing} 个媒体未能预览；原文与格式导出仍可用。")
+                    await progress.update(
+                        f"正在整理 {index}/{len(urls)} · {prepared.article.title or '文章'}\n正文和媒体会合并展示。")
+                    key = self.pending.put(user_id, message.chat.id, prepared.article,
+                                           prepared.lease_ids, prepared.raw_result)
+                    await send_preview(message, prepared.article, self.worker,
+                                       self.keyboard(key, user_id, private_chat=private(message)),
+                                       self.settings.reader_pending_ttl // 60)
                 succeeded += 1
+            except DeliveryUncertain:
+                failures.append(f"第 {index} 篇发送结果未确认，请先查看聊天；可从 /articles 找回原文。")
             except WorkerError as error:
-                text = MESSAGES.get(error.code, "解析失败，请稍后重试。")
-                if error.code == "unsupported_url":
-                    text += "\n当前支持：" + (await self.worker.capabilities()).names
-                await reply(message, text)
-            except BaseException:
+                failures.append(f"第 {index} 篇：" + MESSAGES.get(error.code, "解析未成功，请稍后重试。"))
+            except asyncio.CancelledError:
                 if key:
                     self.pending.delete(key)
                     key = None
-                raise
+                await progress.update("解析已取消。已发送的其他文章仍可使用。", done=True)
+                return
+            except Exception:
+                failures.append(f"第 {index} 篇未能完成发送，请稍后重试。")
+                if key:
+                    self.pending.delete(key)
+                    key = None
             finally:
                 if prepared and key is None:
                     for lease in prepared.lease_ids:
-                        await self.worker.release(lease)
-        if len(urls) > 1:
-            await reply(
-                message, f"处理完成：成功 {succeeded} / {len(urls)}" + ("；任务失败。" if not succeeded else "。")
-            )
+                        try:
+                            await self.worker.release(lease)
+                        except WorkerError:
+                            pass
+        if failures:
+            await progress.update(f"处理完成：成功 {succeeded}/{len(urls)}\n" + "\n".join(failures), done=True)
+        else:
+            await progress.clear()
 
     async def file(self, message: Any, article: Article, action: str) -> None:
         content = article.markdown if action == "markdown" else article.html
@@ -200,43 +266,75 @@ class App:
     async def enhance(self, user_id: int, message: Any, key: str, operation: str, language: str | None = None) -> None:
         _, article, _ = self.selected(user_id, message, key)
         client = self.llm_client(user_id, sanitize(article))
+        labels = {"summary": ("文章摘要", "summary"), "translate": ("全文翻译", "translated_markdown"),
+                  "tags": ("文章标签", "tags"), "title": ("标题建议", "suggested_title"),
+                  "normalize_markdown": ("整理后的文章", "normalized_markdown")}
+        title, field = labels[operation]
+        progress = Progress(message, user_id)
         try:
-            result = await client.enhance(
-                article, operation, user_id, language or self.pending.preferences(user_id)["language"]
-            )
+            await progress.update(f"正在生成{title}…\n{article.title}\n复杂内容可能需要更长时间。")
+            result = await client.enhance(article, operation, user_id,
+                                          language or self.pending.preferences(user_id)["language"])
+            value = result.model_dump()[field]
+            text = " · ".join(value) if isinstance(value, list) else str(value)
+            if not text.strip():
+                raise LLMError("llm_failed")
+            self.selected(user_id, message, key)
+            self.pending.derived(user_id, key, {field: value})
+            await message.reply_rich(ai_rich(title, text), reply_markup=buttons([
+                [("导出 AI 结果", make_callback(key, "ai_file")), ("回到原文", make_callback(key, "open"))],
+            ]))
+            await progress.clear()
+        except asyncio.CancelledError:
+            await progress.update("AI 任务已取消，原文保留。", done=True)
+            return
+        except LLMError as error:
+            await progress.update(MESSAGES.get(str(error), "AI 暂时未完成，原文保留，可稍后重试。"), done=True)
+        except Exception:
+            await progress.update("AI 结果未能展示；可用文章的「更多操作 → 导出 AI 结果」查看已保存内容。", done=True)
         finally:
             await client.close()
-        derived = result.model_dump()
-        self.pending.derived(user_id, key, derived)
-        text = "\n\n".join(f"{k}: {v}" for k, v in derived.items() if v) or "模型未生成有效内容。"
-        if len(text.encode("utf-16-le")) > 7000:
-            stream = io.BytesIO(text.encode())
-            stream.name = "ai-derived.md"
-            await message.reply_document(stream, file_name=stream.name)
-        else:
-            await reply(message, "AI 派生内容（原文保留）：\n" + text)
 
     async def save(self, user_id: int, message: Any, key: str, target_id: str) -> None:
         key, article, leases = self.selected(user_id, message, key)
         if not self.notion:
             raise NotionError("authorization_required")
+        progress = Progress(message, user_id)
+        await progress.update("正在保存到 Notion…\n大图或长文需要更多时间，请勿重复点击。")
         try:
             result = await self.notion.export_page(
                 user_id, article, target_id, leases=leases, derived=self.pending.derived(user_id, key)
             )
-            await reply(
-                message, "已保存：" + result["url"] + ("\n部分媒体已降级为说明或外链。" if result["warnings"] else "")
-            )
-        finally:
-            for lease in leases:
+        except asyncio.CancelledError:
+            await progress.update("已停止等待 Notion 保存。部分写入可能已完成，"
+                                  "请检查 Notion 后再决定是否重试。", done=True)
+            return
+        except NotionError as error:
+            await progress.update(MESSAGES.get(error.code, "Notion 保存未完成，原文和媒体保留，请检查授权后重试。"),
+                                  done=True)
+            return
+        await progress.clear()
+        await reply(message, "已保存到 Notion。" + ("\n部分媒体以外链或说明保留。" if result["warnings"] else ""),
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("打开 Notion 页面", url=result["url"])]]))
+        for lease in leases:
+            try:
                 await self.worker.release(lease)
-            self.pending.clear_leases(key)
+            except WorkerError:
+                pass
+        self.pending.clear_leases(key)
 
     async def request_save(self, user_id: int, message: Any, key: str) -> None:
         self.selected(user_id, message, key)
         if not self.notion:
             raise NotionError("authorization_required")
-        target = self.notion.target(user_id)
+        if self.secrets and not self.secrets.credential(user_id):
+            await self.notion_command(user_id, message, ["connect"])
+            return
+        try:
+            target = self.notion.target(user_id)
+        except NotionError:
+            await self.notion_targets(user_id, message)
+            return
         missing = await self.notion.schema(user_id, target["id"])
         description = f"将当前文章保存到：{target['title'] or target['id']}"
         if missing:
@@ -247,21 +345,24 @@ class App:
 
     async def notion_command(self, user_id: int, message: Any, args: list[str]) -> None:
         if not self.notion or not self.secrets:
-            raise NotionError("authorization_required")
+            await reply(message, "Notion 尚未由管理员配置。\n目前可以阅读、使用 AI 和导出文件。\n"
+                        "管理员配置授权后，再从这里连接并选择保存位置。", reply_markup=menu(user_id))
+            return
         command = args[0] if args else "status"
         if command == "connect":
             if not self.oauth:
                 await reply(message, "管理员尚未配置 Notion OAuth。")
             else:
-                await reply(message, "打开授权链接：\n" + self.oauth.begin(user_id))
+                await reply(message, "连接你的 Notion\n授权后返回这里，点击「选择保存位置」。",
+                            reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("打开 Notion 授权", url=self.oauth.begin(user_id))],
+                    [InlineKeyboardButton("选择保存位置", callback_data=f"ui:{user_id}:targets")],
+                ]))
         elif command == "disconnect":
             self.secrets.disconnect(user_id)
             await reply(message, "已移除本地授权与目标；可在 Notion 中撤销 Integration 权限。")
         elif command == "targets":
-            values = await self.notion.targets(user_id)
-            await reply(
-                message, "\n".join(f"{t['id']}  {t['title']} ({t['kind']})" for t in values) or "暂无可访问目标。"
-            )
+            await self.notion_targets(user_id, message)
         elif command == "target" and len(args) == 2:
             self.secrets.select(user_id, notion_id(args[1]))
             await reply(message, "已选择目标。")
@@ -276,7 +377,11 @@ class App:
             )
         else:
             credential = self.secrets.credential(user_id)
-            await reply(message, "已连接：" + credential[1] if credential else "尚未连接，请 /notion connect。")
+            await reply(message, ("已连接：" + credential[1] + "\n选择保存位置后，回到文章点击「保存到 Notion」。")
+                        if credential else "尚未连接 Notion。请点击下方按钮完成授权。",
+                        reply_markup=buttons([[(("选择保存位置" if credential else "连接 Notion"),
+                                                 f"ui:{user_id}:" + ("targets" if credential else "connect"))],
+                                              [("返回首页", f"ui:{user_id}:home")]]))
 
     async def settings_command(self, user_id: int, message: Any, args: list[str]) -> None:
         update: dict[str, Any] = {}
@@ -298,23 +403,38 @@ class App:
             self.secrets.secret(user_id, "openai", "" if args[1] == "clear" else args[1])
             await self.bot.send_message(user_id, "个人 OpenAI Key 已更新。", parse_mode=enums.ParseMode.DISABLED)
             return
+        if args and not update:
+            await reply(message, "设置格式：/settings model gpt-6.1-sol\n语言：/settings language zh-CN\n"
+                        "也可以直接点击下方按钮。", reply_markup=menu(user_id))
+            return
         prefs = self.pending.preferences(user_id, update)
         await reply(
             message,
-            f"LLM：{prefs['llm']}；语言：{prefs['language']}；"
+            f"AI：{'开启' if self.settings.llm_enabled and prefs['llm'] else '关闭'}；语言：{prefs['language']}；"
             f"模型：{prefs['model'] or self.settings.openai_model}；"
             f"思考强度：{self.settings.llm_reasoning_effort or '模型默认'}\n"
             "/settings llm on|off\n/settings language zh-CN\n/settings model <模型>\n"
-            "/settings key <key|clear>（会尽力删除含 Key 的消息）",
+            "默认无需个人 Key。修改模型：/settings model <模型名>",
+            reply_markup=buttons([
+                [("关闭 AI" if prefs["llm"] else "开启 AI", f"ui:{user_id}:llm:" + ("off" if prefs["llm"] else "on"))],
+                [("翻译为中文", f"ui:{user_id}:language:zh-CN"), ("翻译为英文", f"ui:{user_id}:language:en")],
+                [("恢复默认模型", f"ui:{user_id}:default_model"), ("返回首页", f"ui:{user_id}:home")],
+            ]),
         )
 
     async def plan(self, user_id: int, message: Any, intent: str) -> None:
+        if not intent.strip():
+            await reply(message, "请说明要如何处理文章，例如：/agent 总结文章并导出 Markdown。")
+            return
         key, _, _ = self.selected(user_id, message)
         client = self.llm_client(user_id, redact(intent))
+        progress = Progress(message, user_id)
         try:
+            await progress.update("正在整理你的处理目标…\n生成计划后会请你确认。")
             plan = await client.plan(intent, user_id)
         finally:
             await client.close()
+            await progress.clear()
         target_id = None
         missing = {}
         if plan.requires_confirmation:
@@ -323,7 +443,11 @@ class App:
             target = self.notion.target(user_id)
             target_id = target["id"]
             missing = await self.notion.schema(user_id, target_id)
-        description = "执行计划：\n" + "\n".join(a.name for a in plan.actions)
+        action_labels = {"prepare_parse": "检查文章", "render_markdown": "导出 Markdown", "render_html": "导出 HTML",
+                         "summarize_article": "生成摘要", "translate_article": "翻译文章", "generate_tags": "提取标签",
+                         "list_notion_targets": "列出 Notion 保存位置", "export_notion": "保存到 Notion"}
+        description = "将依次执行：\n" + "\n".join(
+            f"{i}. {action_labels[a.name]}" for i, a in enumerate(plan.actions, 1))
         if target_id:
             description += "\n保存目标：" + target_id
         if missing:
@@ -382,14 +506,14 @@ class App:
 
     async def dispatch(self, client: Any, message: Any) -> None:
         user_id = int(message.from_user.id) if message.from_user else 0
-        text = message.text or ""
+        text = message.text or getattr(message, "caption", None) or ""
         tokens = text.split()
         command = tokens[0].split("@")[0] if tokens else ""
         if user_id and private(message) and command == "/id":
             await reply(message, f"你的 Telegram 用户 ID：{user_id}")
             return
         if user_id not in self.settings.allowed_users:
-            if user_id and private(message) and command in {"/start", "/help"}:
+            if user_id and private(message):
                 await reply(
                     message,
                     f"欢迎使用阅读助手。你的 Telegram 用户 ID：{user_id}\n"
@@ -399,7 +523,7 @@ class App:
             return
         if command == "/cancel":
             task = self.active.get(user_id)
-            if task and not task.done():
+            if task and not task.done() and self.active_chat.get(user_id) == message.chat.id:
                 task.cancel()
                 await reply(message, "已请求取消。")
                 return
@@ -420,32 +544,38 @@ class App:
             task = asyncio.current_task()
             if task:
                 self.active[user_id] = task
+                self.active_chat[user_id] = message.chat.id
             try:
                 if command in {"/start", "/help"}:
-                    await reply(
-                        message,
-                        "发送 URL 或 /read <url> 预览，再点击文章按钮导出 Markdown/HTML。\n"
-                        "/id 查看自己的用户 ID。\n/summary、/notion connect|status|targets|target|disconnect\n"
-                        "/settings、/agent <目标>、/cancel。Notion/LLM 仅限私聊，默认不会自动执行。",
-                    )
-                elif command in {"/notion", "/settings", "/summary", "/agent"}:
+                    await self.home(user_id, message, help_page=command == "/help")
+                elif command == "/articles":
+                    await self.articles(user_id, message)
+                elif command == "/platforms":
+                    await self.platforms(user_id, message)
+                elif command == "/read" and len(tokens) == 1:
+                    await reply(message, "请直接发送链接，或使用 /read <网址>。也支持分享消息中的隐藏链接。",
+                                reply_markup=menu(user_id))
+                elif command in {"/notion", "/settings", "/summary", "/translate", "/agent"}:
                     if not private(message):
                         await reply(message, "此操作仅支持私聊。")
                     elif command == "/notion":
                         await self.notion_command(user_id, message, tokens[1:])
                     elif command == "/settings":
                         await self.settings_command(user_id, message, tokens[1:])
-                    elif command == "/summary":
+                    elif command in {"/summary", "/translate"}:
                         key, _, _ = self.selected(user_id, message)
-                        await self.enhance(user_id, message, key, "summary")
+                        await self.enhance(user_id, message, key, "summary" if command == "/summary" else "translate")
                     else:
                         await self.plan(user_id, message, text.partition(" ")[2])
                 else:
-                    urls = extract_urls(text)
+                    urls = message_urls(message)
                     if urls:
                         await self.read(user_id, message, urls)
                     elif private(message) and not command.startswith("/"):
-                        await self.plan(user_id, message, text)
+                        if self.pending.latest(user_id, message.chat.id):
+                            await self.plan(user_id, message, text)
+                        else:
+                            await self.home(user_id, message)
                     else:
                         await reply(message, "请发送支持平台的 URL。")
             except asyncio.CancelledError:
@@ -454,17 +584,83 @@ class App:
                 code = error.code if isinstance(error, (WorkerError, NotionError)) else str(error)
                 await reply(message, MESSAGES.get(code, "操作失败，原文已保留；请检查配置后重试。"))
             except ValueError:
-                await reply(message, "参数无效或文章已过期，请检查命令或重新解析。")
+                await reply(message, "没有找到可用文章，或命令参数不正确。\n"
+                            "请先发送链接；已有文章可点击「最近文章」重新打开。", reply_markup=menu(user_id))
             except Exception:
                 await reply(message, "操作暂时失败，请稍后重试。")
             finally:
                 self.active.pop(user_id, None)
+                self.active_chat.pop(user_id, None)
+
+    async def notion_targets(self, user_id: int, message: Any, offset: int = 0) -> None:
+        if not self.notion or not self.secrets:
+            await self.notion_command(user_id, message, [])
+            return
+        if not self.secrets.credential(user_id):
+            await self.notion_command(user_id, message, ['connect'])
+            return
+        values = await self.notion.targets(user_id)
+        rows = [[(truncate(t['title'] or '未命名页面', 40), f"ui:{user_id}:target:{t['id']}")]
+                for t in values[offset:offset + 8]]
+        nav = []
+        if offset:
+            nav.append(('上一页', f'ui:{user_id}:targets:{max(0, offset - 8)}'))
+        if offset + 8 < len(values):
+            nav.append(('下一页', f'ui:{user_id}:targets:{offset + 8}'))
+        if nav:
+            rows.append(nav)
+        rows.append([('返回首页', f'ui:{user_id}:home')])
+        await reply(message, '选择 Notion 保存位置\n点击一个页面或数据源。' if values else
+                    '暂无可保存的位置。\n请在 Notion 中把目标页面授权给此 Integration，再重新加载。',
+                    reply_markup=buttons(rows))
+
+    async def menu_action(self, user_id: int, message: Any, data: str) -> None:
+        parts = data.split(':')
+        if len(parts) not in {3, 4} or parts[1] != str(user_id) or not private(message):
+            raise PermissionError
+        action = parts[2]
+        arg = parts[3] if len(parts) == 4 else ''
+        panel = Panel(message)
+        if action in {'home', 'help'}:
+            await self.home(user_id, panel, help_page=action == 'help')
+        elif action == 'articles':
+            await self.articles(user_id, panel, max(0, int(arg or 0)))
+        elif action == 'platforms':
+            await self.platforms(user_id, panel)
+        elif action == 'settings':
+            await self.settings_command(user_id, panel, [])
+        elif action == 'llm' and arg in {'on', 'off'}:
+            await self.settings_command(user_id, panel, ['llm', arg])
+        elif action == 'language' and arg in {'zh-CN', 'en'}:
+            await self.settings_command(user_id, panel, ['language', arg])
+        elif action == 'default_model':
+            self.pending.preferences(user_id, {'model': ''})
+            await self.settings_command(user_id, panel, [])
+        elif action in {'notion', 'connect'}:
+            await self.notion_command(user_id, panel, ['connect'] if action == 'connect' else [])
+        elif action == 'targets':
+            await self.notion_targets(user_id, panel, max(0, int(arg or 0)))
+        elif action == 'target' and self.secrets:
+            self.secrets.select(user_id, notion_id(arg))
+            await reply(panel, '已选择保存位置。\n返回文章后点击「保存到 Notion」，核对并确认即可。',
+                        reply_markup=buttons([[('最近文章', f'ui:{user_id}:articles')]]))
+        else:
+            raise ValueError('unknown_menu')
 
     async def callback(self, client: Any, query: Any) -> None:
         uid = int(query.from_user.id)
         message = query.message
         if uid not in self.settings.allowed_users or message is None:
             await query.answer("无权限", show_alert=True)
+            return
+        data = str(query.data or "")
+        if data == f"ui:{uid}:cancel":
+            task = self.active.get(uid)
+            if task and not task.done() and self.active_chat.get(uid) == message.chat.id:
+                task.cancel()
+                await query.answer("正在取消")
+            else:
+                await query.answer("当前聊天没有正在执行的任务。")
             return
         lock = self.locks.setdefault(uid, asyncio.Lock())
         if lock.locked():
@@ -474,8 +670,25 @@ class App:
             task = asyncio.current_task()
             if task:
                 self.active[uid] = task
+                self.active_chat[uid] = message.chat.id
             try:
                 data = str(query.data or "")
+                if data.startswith("ui:"):
+                    if data.split(":")[1] != str(uid):
+                        await query.answer("这是其他用户的操作面板，请发送 /start 打开自己的面板。", show_alert=True)
+                        return
+                    if not private(message):
+                        raise PermissionError
+                    await query.answer()
+                    await self.menu_action(uid, message, data)
+                    return
+                if data.startswith("dismiss:"):
+                    payload = self.pending.consume(uid, message.chat.id, data.split(":", 1)[1])
+                    if not payload:
+                        raise ValueError("expired")
+                    await query.answer("已取消")
+                    await message.edit_text("已取消，本次不会写入或执行计划。", reply_markup=None)
+                    return
                 if data.startswith("confirm:"):
                     if not private(message):
                         raise PermissionError
@@ -508,10 +721,37 @@ class App:
                     raise ValueError("invalid_callback")
                 key, action = parsed
                 _, article, _ = self.selected(uid, message, key)
-                if action not in {"markdown", "html"} and not private(message):
+                if action not in {"markdown", "html", "export", "more", "back", "open"} and not private(message):
                     raise PermissionError
                 await query.answer("正在处理")
-                if action in {"markdown", "html"}:
+                if action in {"more", "back"}:
+                    markup = self.keyboard(key, uid, private_chat=private(message), expanded=action == "more")
+                    if action == "more" and private(message) and self.pending.derived(uid, key):
+                        markup.inline_keyboard.append([
+                            InlineKeyboardButton("导出 AI 结果", callback_data=make_callback(key, "ai_file"))])
+                    await message.edit_reply_markup(markup)
+                elif action == "export":
+                    await message.edit_reply_markup(buttons([
+                        [("Markdown", make_callback(key, "markdown")), ("HTML", make_callback(key, "html"))],
+                        [("返回操作", make_callback(key, "back"))],
+                    ]))
+                elif action == "open":
+                    await send_preview(message, article, self.worker,
+                                       self.keyboard(key, uid, private_chat=private(message)),
+                                       self.settings.reader_pending_ttl // 60)
+                elif action == "ai_file":
+                    values = self.pending.derived(uid, key)
+                    labels = {"summary": "摘要", "translated_markdown": "翻译", "tags": "标签",
+                              "suggested_title": "标题建议", "normalized_markdown": "整理排版"}
+                    content = "\n\n".join("## " + labels.get(k, k) + "\n" +
+                                             (" · ".join(v) if isinstance(v, list) else str(v))
+                                             for k, v in values.items() if v)
+                    if not content:
+                        raise ValueError("no_ai_result")
+                    stream = io.BytesIO(content.encode())
+                    stream.name = "article-ai.md"
+                    await message.reply_document(stream, file_name=stream.name)
+                elif action in {"markdown", "html"}:
                     await self.file(message, article, action)
                 elif action == "save":
                     await self.request_save(uid, message, key)
@@ -522,7 +762,7 @@ class App:
             except PermissionError:
                 await query.answer("此操作仅支持私聊。", show_alert=True)
             except ValueError:
-                await query.answer("内容/确认按钮已过期，请重新操作。", show_alert=True)
+                await query.answer("此按钮已过期或不属于你，请发送 /articles 打开自己的文章。", show_alert=True)
             except (NotionError, WorkerError, LLMError) as error:
                 code = error.code if isinstance(error, (NotionError, WorkerError)) else str(error)
                 await reply(message, MESSAGES.get(code, "操作失败，原文已保留，可以稍后重试。"))
@@ -530,6 +770,7 @@ class App:
                 await reply(message, "操作暂时失败，原文已保留。")
             finally:
                 self.active.pop(uid, None)
+                self.active_chat.pop(uid, None)
 
     async def maintain(self) -> None:
         while True:
@@ -574,7 +815,7 @@ class App:
             plugins=None,
             parse_mode=enums.ParseMode.DISABLED,
         )
-        self.bot.add_handler(MessageHandler(self.dispatch, filters.text))
+        self.bot.add_handler(MessageHandler(self.dispatch, filters.incoming & (filters.text | filters.caption)))
         self.bot.add_handler(CallbackQueryHandler(self.callback))
         runner = None
         task = None

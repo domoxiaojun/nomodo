@@ -1,17 +1,21 @@
-# 单容器 Compose 部署
+# Reader 与专用 Worker 的 Compose 部署
 
 从此独立项目根目录在部署服务器执行：
 
 ```bash
 cp .env.example .env
-chmod 600 .env
-mkdir -p data/reader data/notion
-# 填好 .env：专用 Token、白名单、Worker URL 和服务认证密钥。
+cp .env.example worker.env
+# worker.env 仅保留 BOT_TOKEN、API_ID、API_HASH、WORKER_SERVICE_KEY，参考下文。
+chmod 600 .env worker.env
+mkdir -p data/reader data/notion data/worker/data data/worker/downloads data/worker/logs
+# 填好 .env：专用 Token、白名单、OPENAI_API_KEY、Worker URL 和服务认证密钥。
 docker compose --env-file .env -f deploy/compose.yaml up -d --build
 docker compose --env-file .env -f deploy/compose.yaml ps
 ```
 
-Compose 只有 `reader` 一个服务，不创建或修改 ParseHub Worker，不依赖另一个仓库的目录或镜像构建上下文。
+Compose 包含 `reader` 和 `worker` 两个服务。Worker 从 GitHub 固定提交构建，不依赖其他本地工作区。
+
+Reader `.env` 设置 `PARSEHUB_WORKER_URL=http://worker:8080`，`PARSEHUB_WORKER_SECRET` 与 `worker.env` 的 `WORKER_SERVICE_KEY` 一致（至少 32 字符）。Worker 使用 `BOT_TOKEN`、`API_ID`、`API_HASH`；其值与 Reader 的 `READER_BOT_TOKEN`、`READER_API_ID`、`READER_API_HASH` 相同。Worker 不接收 updates，数据独立保存。
 
 ## 网络
 
@@ -34,7 +38,7 @@ Worker API 协议必须为 v3，ParseHub 版本需等于本项目 `uv.lock` 的�
 
 Compose 显式 `type: bind`，`../data` 相对 `deploy/compose.yaml` 解析到项目根目录 `data/`。没有顶层命名卷定义。`env_file: ../.env` 同样指向项目根目录。
 
-Reader 只把受限媒体保存在内存，不持久存下载文件；Worker 的下载缓存由其已有部署管理，因此此项目不挂载或访问 Worker 的 `downloads/`。
+Reader 只把受限媒体保存在内存。Worker 数据、下载缓存和日志保存在 `data/worker/` 对应子目录，均为 bind mount。
 
 备份时先停 Reader，完整复制 `data/`（含 SQLite WAL/SHM），并单独安全备份 `.env` 中的加密密钥。没有密钥就不能恢复 Notion/个人 OpenAI 凭据。重建容器不删除宿主机目录。
 

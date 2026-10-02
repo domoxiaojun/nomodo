@@ -61,7 +61,7 @@ def test_llm_failures_are_safe_and_leave_original_unchanged(mode: str) -> None:
         )
         original = article.model_dump_json()
         client = ResponsesClient("key", "model", "identity", transport=httpx.MockTransport(handler))
-        with pytest.raises(LLMError, match="llm_failed") as error:
+        with pytest.raises(LLMError, match="llm_timeout" if mode == "timeout" else "llm_failed") as error:
             await client.enhance(article, "summary", 1)
         assert "secret" not in str(error.value) and article.model_dump_json() == original
         await client.close()
@@ -112,6 +112,8 @@ def test_llm_defaults_and_user_opt_out(tmp_path: Path) -> None:
 def test_failed_media_send_releases_pending_lease(tmp_path: Path) -> None:
     from typing import cast
 
+    from pyrogram.errors import BadRequest
+
     from simpread.worker import PreparedArticle
 
     async def run() -> None:
@@ -123,9 +125,8 @@ def test_failed_media_send_releases_pending_lease(tmp_path: Path) -> None:
         worker.prepare = AsyncMock(return_value=PreparedArticle(article, "job", ("l",), {}))
         worker.release = AsyncMock()
         msg = message(text="https://example.com")
-        msg.reply_text = AsyncMock(side_effect=RuntimeError("fixture"))
-        with pytest.raises(RuntimeError):
-            await app.read(1, msg, ["https://example.com"])
+        msg.reply_rich = AsyncMock(side_effect=BadRequest())
+        await app.read(1, msg, ["https://example.com"])
         worker.release.assert_awaited_once_with("l")
         assert app.pending.count(1) == 0
         await app.close()

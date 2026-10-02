@@ -68,3 +68,11 @@ Notion token 文档未声明 PKCE，因此 OAuth 使用一次性 state 和浏览
 - ✅ 删除价格参数、费用计算与美元预算拦截；模型命令不再要求价格。
 - ✅ 全量 61 项测试、Ruff、mypy（39 个文件）、链接检查通过；推送并部署后 Reader healthy，容器配置 true / gpt-6.1-sol / high，旧价格环境变量已删除。
 - ✅ 用户更新 Key 后 /models 返回 200，发现 gpt-6.1-sol；项目 Responses SDK 的真实摘要调用（合成短文章、high）成功返回结构化结果。未发送 Telegram 消息或写入 Notion。
+
+## 2026-10-03：完整交互流程与 Rich Message 优化
+
+- ✅ 审查现有入口、解析与媒体发送、按钮、AI、设置、Notion 和异常流程，问题与改进记录于 docs/interaction-review-2026-10-03.md。
+- ✅ 原生 Rich Message：一篇文章一条结果，结构化正文/表格/媒体/按钮；有界长文及媒体降级，避免重复发送。
+- ✅ 完善首次使用和菜单、解析/AI 进度、可执行错误提示、设置交互和 Notion 未配置引导。
+- ✅ 79 项测试、Ruff、mypy（43 个文件）通过，覆盖真实 Kurigram 序列化和单次发送、权限/回调/重复发送、媒体及 Notion 失败恢复。
+- [ ] 发布部署、确认服务健康与菜单，记录真实 Telegram 客户端渲染验收边界。
