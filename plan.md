@@ -39,3 +39,10 @@ Notion token 文档未声明 PKCE，因此 OAuth 使用一次性 state 和浏览
 - ✅ 配置与 SDK 路由回归验证：28 个测试通过，Ruff 通过，mypy 32 个文件通过。
 - ✅ 从 GitHub main 拉取部署版本，oraclesg Compose 镜像构建通过；服务器 .env 权限 600。
 - [ ] 补齐 Worker 和用户配置，启动并检查健康状态。当前缺少 Worker URL/secret、用户白名单和 LLM 模型/价格，未启动容器，LLM 保持关闭。
+
+## 2026-10-02：补齐专用 Worker
+
+- ✅ 确认完整部署应包含 Reader 与专用 Worker，复用 GitHub worker 分支的固定提交，不修改原 ParseHub 工作区。
+- [ ] 在 Compose 加入 Worker、独立持久目录和内部网络连接。
+- [ ] 自动生成共享鉴权密钥，复用同一 Bot 身份，远端构建启动。
+- [ ] 验证双方健康、协议版本、Telegram 连接；记录用户白名单与平台凭据的实际限制。

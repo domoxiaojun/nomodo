@@ -72,3 +72,9 @@ taplo check pyproject.toml
 ```
 
 实施状态与证据见 [plan.md](plan.md)。
+
+## 完整 Compose 部署
+
+`deploy/compose.yaml` 同时启动 Reader 和专用 Worker。Worker 从 GitHub 固定提交构建，只在 Compose 内网提供服务，不占用宿主机端口。Reader 使用根目录 `.env`；Worker 使用不入库的 `worker.env`，设置 `BOT_TOKEN`、`API_ID`、`API_HASH`、`WORKER_SERVICE_KEY`。两者 Bot 身份相同，Worker 不接收 updates。Reader 的 `PARSEHUB_WORKER_SECRET` 必须与 Worker 密钥相同，`PARSEHUB_WORKER_URL=http://worker:8080`。Worker 数据独立保存在 `data/worker/`。
+
+填写 `READER_ALLOWED_USER_IDS` 后运行 `docker compose -f deploy/compose.yaml up -d --build`；模型、价格和平台 Cookie 按实际服务另行配置。
