@@ -29,13 +29,11 @@ def test_reasoning_environment_reaches_client(tmp_path: Path, monkeypatch: pytes
             llm_enabled=True,
             openai_api_key=SecretStr("fixture"),
             openai_model="fixture",
-            llm_input_usd_per_million=1,
-            llm_output_usd_per_million=1,
         ))
         app.pending.preferences(1, {"llm": True})
         client = app.llm_client(1, "body")
         try:
-            assert client.reasoning_effort == (value or None)
+            assert client.reasoning_effort == (value or "high")
         finally:
             await client.close()
             await app.close()
@@ -88,28 +86,25 @@ def test_sanitized_input_excludes_worker_and_secret_fields() -> None:
     assert all(s not in prompt for s in ["abc-secret", "/Users/test", "secret-lease", "media-secret", "nativeError"])
 
 
-def test_budget_or_disabled_stops_before_network(tmp_path: Path) -> None:
-    from pydantic import SecretStr
-
+def test_llm_defaults_and_user_opt_out(tmp_path: Path) -> None:
     async def run() -> None:
-        app = App(
-            settings(
-                tmp_path,
-                llm_enabled=True,
-                openai_api_key=SecretStr("fixture"),
-                openai_model="fixture",
-                llm_daily_budget=0,
-                llm_input_usd_per_million=1,
-                llm_output_usd_per_million=1,
-            )
-        )
-        with pytest.raises(LLMError, match="llm_disabled"):
-            app.llm_client(1, "body")
-        app.pending.preferences(1, {"llm": True})
-        with pytest.raises(LLMError, match="budget_exhausted"):
-            app.llm_client(1, "body")
-        assert app.pending.preferences(2)["llm"] is False
-        await app.close()
+        app = App(settings(tmp_path, llm_enabled=True, openai_api_key=SecretStr("fixture")))
+        try:
+            client = app.llm_client(1, "body")
+            assert client.model == "gpt-6.1-sol"
+            assert client.reasoning_effort == "high"
+            await client.close()
+            app.pending.preferences(1, {"llm": False})
+            with pytest.raises(LLMError, match="llm_disabled"):
+                app.llm_client(1, "body")
+            assert app.pending.preferences(2)["llm"] is True
+            await app.settings_command(2, message(uid=2), ["model", "gpt-6.1-sol"])
+            assert app.pending.preferences(2)["model"] == "gpt-6.1-sol"
+            app.settings.llm_enabled = False
+            with pytest.raises(LLMError, match="llm_disabled"):
+                app.llm_client(2, "body")
+        finally:
+            await app.close()
 
     asyncio.run(run())
 

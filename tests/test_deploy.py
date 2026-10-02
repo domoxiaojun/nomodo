@@ -5,10 +5,17 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_single_service_and_only_local_mounts() -> None:
+def test_reader_worker_internal_network_and_local_mounts() -> None:
     config = yaml.safe_load((ROOT / "deploy/compose.yaml").read_text())
-    assert set(config["services"]) == {"reader"} and "volumes" not in config
+    assert set(config["services"]) == {"reader", "worker"} and "volumes" not in config
+    worker = config["services"]["worker"]
+    assert "ports" not in worker
+    assert worker["env_file"] == ["../worker.env"]
+    assert "#f4b704b2f539d453ab64d9326cd26991eb2f18f0" in worker["build"]["context"]
+    for mount in worker["volumes"]:
+        assert mount.startswith("../data/worker/")
     service = config["services"]["reader"]
+    assert service["depends_on"]["worker"]["condition"] == "service_healthy"
     assert service["command"] == ["python", "-m", "simpread"]
     assert service["env_file"] == ["../.env"]
     assert service["environment"]["READER_HOST"] == "0.0.0.0"

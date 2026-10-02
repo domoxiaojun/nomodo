@@ -20,6 +20,7 @@ from simpread.worker import PreparedArticle, WorkerError
 
 
 def settings(tmp_path: Path, **kwargs: Any) -> Settings:
+    kwargs.setdefault("llm_enabled", False)
     return Settings(
         reader_bot_token=SecretStr("123:fixture"),
         reader_api_id=1,

@@ -37,18 +37,15 @@ class Settings(BaseSettings):
     notion_credentials_key: SecretStr = SecretStr("")
     notion_database_path: Path = Path("data/notion/notion.sqlite3")
     notion_pkce_enabled: bool = False
-    llm_enabled: bool = False
+    llm_enabled: bool = True
     openai_api_key: SecretStr = SecretStr("")
-    openai_model: str = ""
+    openai_model: str = "gpt-6.1-sol"
     openai_base_url: str = "https://api.openai.com/v1"
-    llm_reasoning_effort: ReasoningEffort = None
+    llm_reasoning_effort: ReasoningEffort = "high"
     openai_timeout_seconds: float = Field(default=60, gt=0, le=180)
     llm_max_input_chars: int = Field(default=120000, gt=0, le=120000)
     llm_max_output_tokens: int = Field(default=4096, ge=100, le=16384)
     llm_max_tool_calls: int = Field(default=4, ge=1, le=4)
-    llm_daily_budget: float = Field(default=1, ge=0)
-    llm_input_usd_per_million: float = Field(default=0, ge=0)
-    llm_output_usd_per_million: float = Field(default=0, ge=0)
 
     @property
     def allowed_users(self) -> frozenset[int]:
@@ -90,6 +87,4 @@ class Settings(BaseSettings):
                 raise ValueError("Notion OAuth redirect must use HTTPS")
         if self.llm_enabled and (not self.openai_api_key.get_secret_value() or not self.openai_model):
             raise ValueError("LLM configuration is incomplete")
-        if self.llm_enabled and (self.llm_input_usd_per_million <= 0 or self.llm_output_usd_per_million <= 0):
-            raise ValueError("LLM price rates are required")
         return self

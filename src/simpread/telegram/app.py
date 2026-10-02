@@ -49,8 +49,7 @@ MESSAGES = {
     "schema_confirmation_required": "需要确认添加数据库属性，请重新点击保存按钮。",
     "write_outcome_unknown": "上次写入结果不明，已禁止重复创建。请在 Notion 核对页面，再用 /notion recover <page-id>。",
     "rate_limited": "Notion 暂时限流，请稍后重试。",
-    "budget_exhausted": "已达到今日 LLM 预算，原文仍可导出。",
-    "llm_disabled": "LLM 默认关闭；请在私聊使用 /settings llm on 启用。",
+    "llm_disabled": "LLM 未启用；请检查服务器开关或在私聊使用 /settings llm on。",
 }
 
 
@@ -187,14 +186,6 @@ class App:
         ) or self.settings.openai_api_key.get_secret_value()
         if not key or not model:
             raise LLMError("llm_config_incomplete")
-        input_price = float(prefs.get("input_price") or self.settings.llm_input_usd_per_million)
-        output_price = float(prefs.get("output_price") or self.settings.llm_output_usd_per_million)
-        # UTF-8 bytes conservatively bound text tokens. Reserve prompt overhead and full output cap.
-        cost = (
-            (len(text.encode()) + 8000) * input_price + self.settings.llm_max_output_tokens * output_price
-        ) / 1_000_000
-        if not self.pending.reserve(user_id, cost, self.settings.llm_daily_budget):
-            raise LLMError("budget_exhausted")
         return ResponsesClient(
             key,
             model,
@@ -293,11 +284,10 @@ class App:
             update["llm"] = args[1] == "on"
         elif len(args) == 2 and args[0] == "language" and re.fullmatch(r"[\w-]{1,40}", args[1]):
             update["language"] = args[1]
-        elif len(args) == 4 and args[0] == "model":
-            a, b = float(args[2]), float(args[3])
-            if not 0 < a <= 10000 or not 0 < b <= 10000 or not re.fullmatch(r"[\w.:-]{1,100}", args[1]):
-                raise ValueError("模型/单价无效。")
-            update = {"model": args[1], "input_price": a, "output_price": b}
+        elif len(args) == 2 and args[0] == "model":
+            if not re.fullmatch(r"[\w.:-]{1,100}", args[1]):
+                raise ValueError("模型名无效。")
+            update = {"model": args[1]}
         elif len(args) == 2 and args[0] == "key":
             try:
                 await message.delete()
@@ -311,8 +301,10 @@ class App:
         prefs = self.pending.preferences(user_id, update)
         await reply(
             message,
-            f"LLM：{prefs['llm']}；语言：{prefs['language']}；模型：{prefs['model'] or '默认'}\n"
-            "/settings llm on|off\n/settings language zh-CN\n/settings model <模型> <输入单价> <输出单价>\n"
+            f"LLM：{prefs['llm']}；语言：{prefs['language']}；"
+            f"模型：{prefs['model'] or self.settings.openai_model}；"
+            f"思考强度：{self.settings.llm_reasoning_effort or '模型默认'}\n"
+            "/settings llm on|off\n/settings language zh-CN\n/settings model <模型>\n"
             "/settings key <key|clear>（会尽力删除含 Key 的消息）",
         )
 

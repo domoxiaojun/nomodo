@@ -61,3 +61,10 @@ Notion token 文档未声明 PKCE，因此 OAuth 使用一次性 state 和浏览
 - ✅ 共用 reply 函数改用 LinkPreviewOptions，补真实 Kurigram Message 对象的 /start 回归。
 - ✅ 9 项回归测试通过，包含真实库 Message.reply_text 调用；Ruff、mypy 通过。
 - ✅ Reader 已更新，ready=true 且 healthy，新容器日志无启动异常；真实消息回复仍待用户重发验收。
+
+## 2026-10-03：默认启用 LLM 并删除价格功能
+
+- ✅ 按用户要求默认 gpt-6.1-sol / high，用户默认启用且可单独关闭。
+- ✅ 删除价格参数、费用计算与美元预算拦截；模型命令不再要求价格。
+- [ ] 完成回归与配置检查，推送部署并核对生效设置。
+- [ ] 真实模型调用：当前 Key 在 /models 返回 401 Invalid API key，等待有效 Key。

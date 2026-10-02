@@ -1,4 +1,4 @@
-"""Owner/chat scoped durable articles, approvals, settings and daily budget reservations."""
+"""Owner/chat scoped durable articles, approvals, settings."""
 
 from __future__ import annotations
 
@@ -7,7 +7,6 @@ import os
 import secrets
 import sqlite3
 import time
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -29,7 +28,6 @@ class PendingStore:
             CREATE TABLE IF NOT EXISTS approvals (
                 id TEXT PRIMARY KEY, user_id INTEGER, chat_id INTEGER, payload TEXT, expires REAL);
             CREATE TABLE IF NOT EXISTS settings (user_id INTEGER PRIMARY KEY, payload TEXT);
-            CREATE TABLE IF NOT EXISTS budgets (user_id INTEGER, day TEXT, reserved REAL, PRIMARY KEY(user_id,day));
         """)
         self.db.commit()
 
@@ -118,21 +116,13 @@ class PendingStore:
 
     def preferences(self, user_id: int, update: dict[str, Any] | None = None) -> dict[str, Any]:
         row = self.db.execute("SELECT payload FROM settings WHERE user_id=?", (user_id,)).fetchone()
-        output = dict(json.loads(row[0])) if row else {"llm": False, "language": "zh-CN", "model": ""}
+        output = {"llm": True, "language": "zh-CN", "model": ""}
+        if row:
+            output.update(json.loads(row[0]))
+        output.pop("input_price", None)
+        output.pop("output_price", None)
         if update:
             output.update(update)
             with self.db:
                 self.db.execute("INSERT OR REPLACE INTO settings VALUES (?,?)", (user_id, json.dumps(output)))
         return output
-
-    def reserve(self, user_id: int, cost: float, limit: float) -> bool:
-        day = datetime.now(UTC).date().isoformat()
-        with self.db:
-            self.db.execute("INSERT OR IGNORE INTO budgets VALUES (?,?,0)", (user_id, day))
-            return (
-                self.db.execute(
-                    "UPDATE budgets SET reserved=reserved+? WHERE user_id=? AND day=? AND reserved+?<=?",
-                    (cost, user_id, day, cost, limit),
-                ).rowcount
-                == 1
-            )
