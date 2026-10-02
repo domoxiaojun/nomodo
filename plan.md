@@ -75,4 +75,4 @@ Notion token 文档未声明 PKCE，因此 OAuth 使用一次性 state 和浏览
 - ✅ 原生 Rich Message：一篇文章一条结果，结构化正文/表格/媒体/按钮；有界长文及媒体降级，避免重复发送。
 - ✅ 完善首次使用和菜单、解析/AI 进度、可执行错误提示、设置交互和 Notion 未配置引导。
 - ✅ 79 项测试、Ruff、mypy（43 个文件）通过，覆盖真实 Kurigram 序列化和单次发送、权限/回调/重复发送、媒体及 Notion 失败恢复。
-- [ ] 发布部署、确认服务健康与菜单，记录真实 Telegram 客户端渲染验收边界。
+- ✅ 发布并部署 3b81979，Reader/Worker 均 healthy，Reader ready=true；Telegram API 实际返回 12 项菜单。真实客户端显示待用户新链接验收，未代发测试消息。
