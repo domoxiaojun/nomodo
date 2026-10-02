@@ -53,4 +53,4 @@ Notion token 文档未声明 PKCE，因此 OAuth 使用一次性 state 和浏览
 
 - ✅ 核对部署：缺少菜单注册，空白名单导致 /start 静默。
 - ✅ 启动时注册九项中文菜单；私聊 /start、/help、/id 可提示用户 ID，保留业务白名单。
-- [ ] 验证授权边界和类型检查，部署并核对 Telegram 菜单及健康状态。
+- ✅ 8 项回归测试、Ruff、mypy 通过；Reader 已更新且 ready=true；Telegram getMyCommands 实际返回九项中文菜单，getMe 确认 @domoparsebot。未代用户发送消息，首次使用回复由用户私聊验收。
