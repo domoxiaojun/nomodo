@@ -237,3 +237,30 @@ def test_private_onboarding_preserves_whitelist(tmp_path: Path) -> None:
             await app.close()
 
     asyncio.run(run())
+
+
+def test_start_reply_through_real_telegram_message(tmp_path: Path) -> None:
+    from pyrogram import enums
+    from pyrogram.types import Chat, Message, User
+
+    async def run() -> None:
+        app = App(settings(tmp_path))
+        client = SimpleNamespace(send_message=AsyncMock())
+        msg = Message(
+            id=123,
+            client=cast(Any, client),
+            chat=Chat(id=99, type=enums.ChatType.PRIVATE),
+            from_user=User(id=99, first_name='Fixture'),
+            text=cast(Any, '/start'),
+        )
+        try:
+            await app.dispatch(client, msg)
+            client.send_message.assert_awaited_once()
+            sent = client.send_message.call_args.kwargs
+            assert sent['chat_id'] == 99
+            assert '99' in sent['text']
+            assert sent['link_preview_options'].is_disabled is True
+        finally:
+            await app.close()
+
+    asyncio.run(run())

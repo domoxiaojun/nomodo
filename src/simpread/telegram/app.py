@@ -13,7 +13,7 @@ from typing import Any
 from aiohttp import web
 from pyrogram import Client, enums, filters, idle
 from pyrogram.handlers import CallbackQueryHandler, MessageHandler
-from pyrogram.types import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup
+from pyrogram.types import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, LinkPreviewOptions
 
 from simpread.config import Settings
 from simpread.domain import Article
@@ -60,7 +60,10 @@ def private(message: Any) -> bool:
 
 async def reply(message: Any, text: str, **kwargs: Any) -> None:
     await message.reply_text(
-        truncate(text, 3800), parse_mode=enums.ParseMode.DISABLED, disable_web_page_preview=True, **kwargs
+        truncate(text, 3800),
+        parse_mode=enums.ParseMode.DISABLED,
+        link_preview_options=LinkPreviewOptions(is_disabled=True),
+        **kwargs,
     )
 
 
