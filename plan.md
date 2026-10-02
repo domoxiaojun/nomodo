@@ -66,5 +66,5 @@ Notion token 文档未声明 PKCE，因此 OAuth 使用一次性 state 和浏览
 
 - ✅ 按用户要求默认 gpt-6.1-sol / high，用户默认启用且可单独关闭。
 - ✅ 删除价格参数、费用计算与美元预算拦截；模型命令不再要求价格。
-- [ ] 完成回归与配置检查，推送部署并核对生效设置。
-- [ ] 真实模型调用：当前 Key 在 /models 返回 401 Invalid API key，等待有效 Key。
+- ✅ 全量 61 项测试、Ruff、mypy（39 个文件）、链接检查通过；推送并部署后 Reader healthy，容器配置 true / gpt-6.1-sol / high，旧价格环境变量已删除。
+- ✅ 用户更新 Key 后 /models 返回 200，发现 gpt-6.1-sol；项目 Responses SDK 的真实摘要调用（合成短文章、high）成功返回结构化结果。未发送 Telegram 消息或写入 Notion。
