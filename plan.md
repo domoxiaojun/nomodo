@@ -59,4 +59,5 @@ Notion token 文档未声明 PKCE，因此 OAuth 使用一次性 state 和浏览
 
 - ✅ 线上日志定位到 Message.reply 不支持 disable_web_page_preview。
 - ✅ 共用 reply 函数改用 LinkPreviewOptions，补真实 Kurigram Message 对象的 /start 回归。
-- [ ] 运行必要验证、部署 Reader 并确认健康，用户再次发送消息验收。
+- ✅ 9 项回归测试通过，包含真实库 Message.reply_text 调用；Ruff、mypy 通过。
+- ✅ Reader 已更新，ready=true 且 healthy，新容器日志无启动异常；真实消息回复仍待用户重发验收。
