@@ -7,12 +7,13 @@ from simpread.config import Settings
 from simpread.integrations.openai import ResponsesClient
 
 
-def test_endpoint_from_env_file(tmp_path: Path) -> None:
+def test_endpoint_from_env_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     env = tmp_path / '.env'
     env.write_text('READER_BOT_TOKEN=123:fixture\nREADER_API_ID=123\n'
                    'READER_API_HASH=fixture\nPARSEHUB_WORKER_SECRET=' + 'x' * 32
                    + '\nOPENAI_BASE_URL=https://proxy.example/v1\n')
-    settings = Settings(_env_file=env)
+    monkeypatch.chdir(tmp_path)
+    settings = Settings()
     assert settings.openai_base_url == 'https://proxy.example/v1'
 
     async def check() -> None:
@@ -24,4 +25,4 @@ def test_endpoint_from_env_file(tmp_path: Path) -> None:
 
     asyncio.run(check())
     with pytest.raises(ValueError, match='invalid OpenAI base URL'):
-        Settings(_env_file=env, openai_base_url='proxy.example')
+        Settings(openai_base_url='proxy.example')
