@@ -36,6 +36,6 @@ Notion token 文档未声明 PKCE，因此 OAuth 使用一次性 state 和浏览
 
 - ✅ 确认独立 Bot 与 GitHub main；隔离现有未提交功能。
 - ✅ 支持 .env 的 OPENAI_BASE_URL 并复用 Compose env_file。
-- ✅ 配置与 SDK 路由回归验证：28 个测试通过，Ruff 通过。
-- [ ] 从 GitHub 拉取部署版本并构建镜像。
-- [ ] 补齐 Worker 和用户配置，启动并检查健康状态。
+- ✅ 配置与 SDK 路由回归验证：28 个测试通过，Ruff 通过，mypy 32 个文件通过。
+- ✅ 从 GitHub main 拉取部署版本，oraclesg Compose 镜像构建通过；服务器 .env 权限 600。
+- [ ] 补齐 Worker 和用户配置，启动并检查健康状态。当前缺少 Worker URL/secret、用户白名单和 LLM 模型/价格，未启动容器，LLM 保持关闭。
