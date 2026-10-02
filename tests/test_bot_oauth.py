@@ -214,3 +214,26 @@ def test_http_health_uses_reader_state(tmp_path: Path) -> None:
         await app.close()
 
     asyncio.run(run())
+
+
+def test_private_onboarding_preserves_whitelist(tmp_path: Path) -> None:
+    async def run() -> None:
+        app = App(settings(tmp_path))
+        cast(Any, app.worker).prepare = AsyncMock()
+        try:
+            for command in ('/start', '/help', '/id', '/start@reader_bot'):
+                msg = message(uid=99, text=command)
+                await app.dispatch(None, msg)
+                assert '99' in msg.reply_text.call_args.args[0]
+            group = message(uid=99, text='/start', kind='group')
+            await app.dispatch(None, group)
+            group.reply_text.assert_not_awaited()
+            stranger = message(uid=99, text='/read https://youtube.com/watch?v=a')
+            await app.dispatch(None, stranger)
+            stranger.reply_text.assert_not_awaited()
+            cast(Any, app.worker).prepare.assert_not_awaited()
+            assert app.pending.count(99) == 0
+        finally:
+            await app.close()
+
+    asyncio.run(run())

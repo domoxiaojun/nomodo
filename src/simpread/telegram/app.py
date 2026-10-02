@@ -13,7 +13,7 @@ from typing import Any
 from aiohttp import web
 from pyrogram import Client, enums, filters, idle
 from pyrogram.handlers import CallbackQueryHandler, MessageHandler
-from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from pyrogram.types import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup
 
 from simpread.config import Settings
 from simpread.domain import Article
@@ -27,6 +27,18 @@ from simpread.worker import WorkerClient, WorkerError, extract_urls
 
 from .callbacks import make_callback, parse_callback, preview, truncate
 from .media import send_preview
+
+BOT_COMMANDS = [
+    BotCommand("start", "开始使用与授权说明"),
+    BotCommand("help", "查看使用帮助"),
+    BotCommand("id", "查看自己的 Telegram 用户 ID"),
+    BotCommand("read", "解析链接：/read <网址>"),
+    BotCommand("cancel", "取消任务或清理最近文章"),
+    BotCommand("settings", "查看个人设置"),
+    BotCommand("summary", "摘要最近文章（需启用 AI）"),
+    BotCommand("agent", "规划文章处理任务（需启用 AI）"),
+    BotCommand("notion", "Notion 授权与保存设置（需配置）"),
+]
 
 MESSAGES = {
     "unsupported_url": "暂不支持该平台。",
@@ -375,11 +387,21 @@ class App:
 
     async def dispatch(self, client: Any, message: Any) -> None:
         user_id = int(message.from_user.id) if message.from_user else 0
-        if user_id not in self.settings.allowed_users:
-            return
         text = message.text or ""
         tokens = text.split()
         command = tokens[0].split("@")[0] if tokens else ""
+        if user_id and private(message) and command == "/id":
+            await reply(message, f"你的 Telegram 用户 ID：{user_id}")
+            return
+        if user_id not in self.settings.allowed_users:
+            if user_id and private(message) and command in {"/start", "/help"}:
+                await reply(
+                    message,
+                    f"欢迎使用阅读助手。你的 Telegram 用户 ID：{user_id}\n"
+                    "请将此 ID 提供给管理员，加入白名单后即可发送链接解析和导出文章。\n"
+                    "无需注册账号；/id 可随时查看自己的 ID。",
+                )
+            return
         if command == "/cancel":
             task = self.active.get(user_id)
             if task and not task.done():
@@ -407,7 +429,8 @@ class App:
                 if command in {"/start", "/help"}:
                     await reply(
                         message,
-                        "发送 URL 或 /read <url> 预览。\n/summary、/notion connect|status|targets|target|disconnect\n"
+                        "发送 URL 或 /read <url> 预览，再点击文章按钮导出 Markdown/HTML。\n"
+                        "/id 查看自己的用户 ID。\n/summary、/notion connect|status|targets|target|disconnect\n"
                         "/settings、/agent <目标>、/cancel。Notion/LLM 仅限私聊，默认不会自动执行。",
                     )
                 elif command in {"/notion", "/settings", "/summary", "/agent"}:
@@ -567,6 +590,7 @@ class App:
             await web.TCPSite(runner, self.settings.reader_host, self.settings.reader_port).start()
             task = asyncio.create_task(self.maintain())
             await self.bot.start()
+            await self.bot.set_bot_commands(BOT_COMMANDS)
             await idle()
         finally:
             if task:

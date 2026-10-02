@@ -48,3 +48,9 @@ Notion token 文档未声明 PKCE，因此 OAuth 使用一次性 state 和浏览
 - ✅ 双容器 healthy；Reader ready=true；Worker protocolVersion=3、ready=true、deliveryReady=true、senderState=ready。Reader 启动校验通过，ParseHub 版本及 Bot 身份匹配。
 
 当前部署已启动。用户白名单为空，等待用户 ID 后开放使用；LLM 未启用，等待模型与价格配置；平台 Cookie 尚未配置，未进行真实链接解析或 Notion 验收。此前“缺少 Worker，未启动”的记录已由本阶段解决。
+
+## 2026-10-03：Telegram 命令菜单与首次使用
+
+- ✅ 核对部署：缺少菜单注册，空白名单导致 /start 静默。
+- ✅ 启动时注册九项中文菜单；私聊 /start、/help、/id 可提示用户 ID，保留业务白名单。
+- [ ] 验证授权边界和类型检查，部署并核对 Telegram 菜单及健康状态。
