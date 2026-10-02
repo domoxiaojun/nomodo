@@ -43,6 +43,8 @@ Notion token 文档未声明 PKCE，因此 OAuth 使用一次性 state 和浏览
 ## 2026-10-02：补齐专用 Worker
 
 - ✅ 确认完整部署应包含 Reader 与专用 Worker，复用 GitHub worker 分支的固定提交，不修改原 ParseHub 工作区。
-- [ ] 在 Compose 加入 Worker、独立持久目录和内部网络连接。
-- [ ] 自动生成共享鉴权密钥，复用同一 Bot 身份，远端构建启动。
-- [ ] 验证双方健康、协议版本、Telegram 连接；记录用户白名单与平台凭据的实际限制。
+- ✅ 在 Compose 加入 Worker、独立持久目录和内部网络连接。
+- ✅ 自动生成共享鉴权密钥，复用同一 Bot 身份，远端构建启动。
+- ✅ 双容器 healthy；Reader ready=true；Worker protocolVersion=3、ready=true、deliveryReady=true、senderState=ready。Reader 启动校验通过，ParseHub 版本及 Bot 身份匹配。
+
+当前部署已启动。用户白名单为空，等待用户 ID 后开放使用；LLM 未启用，等待模型与价格配置；平台 Cookie 尚未配置，未进行真实链接解析或 Notion 验收。此前“缺少 Worker，未启动”的记录已由本阶段解决。
