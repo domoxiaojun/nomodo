@@ -188,6 +188,7 @@ class App:
             max_input_chars=self.settings.llm_max_input_chars,
             max_output_tokens=self.settings.llm_max_output_tokens,
             reasoning_effort=self.settings.llm_reasoning_effort,
+            base_url=self.settings.openai_base_url,
         )
 
     async def enhance(self, user_id: int, message: Any, key: str, operation: str, language: str | None = None) -> None:

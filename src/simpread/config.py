@@ -40,6 +40,7 @@ class Settings(BaseSettings):
     llm_enabled: bool = False
     openai_api_key: SecretStr = SecretStr("")
     openai_model: str = ""
+    openai_base_url: str = "https://api.openai.com/v1"
     llm_reasoning_effort: ReasoningEffort = None
     openai_timeout_seconds: float = Field(default=60, gt=0, le=180)
     llm_max_input_chars: int = Field(default=120000, gt=0, le=120000)
@@ -60,6 +61,10 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def validate_configuration(self) -> Settings:
         _ = self.allowed_users, self.admin_users
+        endpoint = urlsplit(self.openai_base_url)
+        if (endpoint.scheme not in {"http", "https"} or not endpoint.hostname
+                or endpoint.username or endpoint.password or endpoint.query or endpoint.fragment):
+            raise ValueError("invalid OpenAI base URL")
         bot_id = self.reader_bot_token.get_secret_value().split(":", 1)[0]
         if not bot_id.isdigit():
             raise ValueError("invalid bot token")

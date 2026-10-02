@@ -42,7 +42,7 @@ Notion、LLM、授权/设置与工作流操作仅限白名单用户私聊。群�
 
 Notion 配置需要 `NOTION_CLIENT_ID`、`NOTION_CLIENT_SECRET`、`NOTION_OAUTH_REDIRECT_URI` 和 `NOTION_CREDENTIALS_KEY`。回调必须为 HTTPS，详细代理示例见 [部署说明](deploy/README.md)。OAuth state 一次性使用，绑定 Telegram 用户及发起浏览器的 HttpOnly/Secure cookie。官方 token 文档未声明 PKCE，默认关闭可选 PKCE；不要把配置开关当作官方支持证明。
 
-LLM 默认关闭，既需要 `LLM_ENABLED=true`，也需要用户 `/settings llm on`。使用官方 OpenAI Python SDK Responses API，显式 `store=false`、结构化输出、HMAC 用户标识、固定 OpenAI 服务地址。只发送 Article 文本字段；不序列化媒体租约、凭据、内部异常。输入过大直接失败并保留原文，不静默截断。
+LLM 默认关闭，既需要 `LLM_ENABLED=true`，也需要用户 `/settings llm on`。使用官方 OpenAI Python SDK Responses API，显式 `store=false`、结构化输出、HMAC 用户标识、从 `.env` 的 `OPENAI_BASE_URL` 读取服务地址（默认 `https://api.openai.com/v1`，自定义地址须包含协议及 API 路径）。只发送 Article 文本字段；不序列化媒体租约、凭据、内部异常。输入过大直接失败并保留原文，不静默截断。
 
 每日美元预算采用持久的保守预留：UTF-8 字节数作为输入 token 上界，加上提示词余量和最大输出 token。失败请求也不退回预留额度；这可能比实际账单更早停止调用。管理员/用户必须填写所选模型的正确价格，应用不自动拉取价格。
 

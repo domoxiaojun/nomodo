@@ -31,3 +31,11 @@ Notion token 文档未声明 PKCE，因此 OAuth 使用一次性 state 和浏览
 - 旧仓库 `git status --porcelain --untracked-files=all` 无输出，未修改旧仓库。
 
 没有启动 Docker、Telegram、Notion OAuth/API、实际 ParseHub Worker 或 OpenAI 请求。测试使用模拟服务与临时 SQLite。P4 和真实部署验收保持未完成。
+
+## 2026-10-02：oraclesg Compose 部署
+
+- ✅ 确认独立 Bot 与 GitHub main；隔离现有未提交功能。
+- ✅ 支持 .env 的 OPENAI_BASE_URL 并复用 Compose env_file。
+- ✅ 配置与 SDK 路由回归验证：28 个测试通过，Ruff 通过。
+- [ ] 从 GitHub 拉取部署版本并构建镜像。
+- [ ] 补齐 Worker 和用户配置，启动并检查健康状态。

@@ -66,13 +66,14 @@ class ResponsesClient:
         max_output_tokens: int = 4096,
         transport: httpx.AsyncBaseTransport | None = None,
         reasoning_effort: ReasoningEffort = None,
+        base_url: str = "https://api.openai.com/v1",
     ) -> None:
         self.model, self.identity_key = model, identity_key
         self.reasoning_effort = reasoning_effort
         self.max_input_chars, self.max_output_tokens = max_input_chars, max_output_tokens
         self.client = AsyncOpenAI(
             api_key=api_key,
-            base_url="https://api.openai.com/v1",
+            base_url=base_url,
             max_retries=0,
             http_client=httpx.AsyncClient(transport=transport, timeout=timeout),
             timeout=timeout,
