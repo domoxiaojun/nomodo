@@ -72,10 +72,24 @@ class PendingStore:
 
     def recent(self, user_id: int, chat_id: int) -> list[dict[str, Any]]:
         rows = self.db.execute(
+            "SELECT id,article,expires FROM articles WHERE user_id=? AND chat_id=? AND expires>? ORDER BY created DESC",
+            (user_id, chat_id, time.time()),
+        )
+        return [{"id": row["id"], "title": json.loads(row["article"]).get("title", ""),
+                 "expires": row["expires"]} for row in rows]
+
+    def find_url(self, user_id: int, chat_id: int, url: str) -> str | None:
+        rows = self.db.execute(
             "SELECT id,article FROM articles WHERE user_id=? AND chat_id=? AND expires>? ORDER BY created DESC",
             (user_id, chat_id, time.time()),
         )
-        return [{"id": row["id"], "title": json.loads(row["article"]).get("title", "")} for row in rows]
+        return next((str(row["id"]) for row in rows
+                     if json.loads(row["article"])["source"]["original_url"] == url), None)
+
+    def minutes_left(self, user_id: int, chat_id: int, key: str) -> int:
+        row = self.db.execute("SELECT expires FROM articles WHERE id=? AND user_id=? AND chat_id=?",
+                              (key, user_id, chat_id)).fetchone()
+        return max(1, int((row[0] - time.time()) / 60)) if row else 0
 
     def entries(self) -> list[dict[str, Any]]:
         return [dict(r) for r in self.db.execute("SELECT id,user_id,chat_id,leases,expires FROM articles")]

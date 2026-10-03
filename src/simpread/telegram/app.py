@@ -9,9 +9,11 @@ import json
 import re
 import time
 from typing import Any
+from urllib.parse import urlsplit
 
 from aiohttp import web
 from pyrogram import Client, enums, filters, idle
+from pyrogram.errors import RPCError
 from pyrogram.handlers import CallbackQueryHandler, MessageHandler
 from pyrogram.types import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, LinkPreviewOptions
 
@@ -26,22 +28,24 @@ from simpread.storage import PendingStore
 from simpread.worker import WorkerClient, WorkerError
 
 from .callbacks import make_callback, parse_callback, truncate
+from .guidance import ERRORS, HELP
 from .input import message_urls
 from .media import DeliveryUncertain, send_preview
 from .presentation import ai_rich
-from .ui import Panel, Progress, buttons, menu
+from .ui import Activity, Panel, Progress, buttons, menu, safe_filename
 
 BOT_COMMANDS = [
     BotCommand("start", "开始使用与授权说明"),
     BotCommand("help", "查看使用帮助"),
     BotCommand("id", "查看自己的 Telegram 用户 ID"),
     BotCommand("read", "解析链接：/read <网址>"),
+    BotCommand("status", "查看当前任务和进度"),
     BotCommand("articles", "查看最近解析的文章"),
     BotCommand("platforms", "查看当前支持的平台"),
-    BotCommand("translate", "翻译最近文章"),
+    BotCommand("translate", "翻译当前选中的文章"),
     BotCommand("cancel", "取消当前任务或输入，保留文章"),
     BotCommand("settings", "查看个人设置"),
-    BotCommand("summary", "摘要最近文章（需启用 AI）"),
+    BotCommand("summary", "摘要当前选中的文章"),
     BotCommand("agent", "规划文章处理任务（需启用 AI）"),
     BotCommand("notion", "Notion 授权与保存设置（需配置）"),
 ]
@@ -100,8 +104,141 @@ class App:
         self.locks: dict[int, asyncio.Lock] = {}
         self.active: dict[int, asyncio.Task[Any]] = {}
         self.active_chat: dict[int, int] = {}
+        self.activities: dict[int, Activity] = {}
+        self.model_catalog: dict[int, tuple[float, list[str]]] = {}
         self.bot: Any = None
         self.capacity = asyncio.Semaphore(2)
+
+    def token_button(self, user_id: int, chat_id: int, label: str, prefix: str,
+                     payload: dict[str, Any]) -> tuple[str, str]:
+        return label, prefix + ':' + self.pending.approve(user_id, chat_id, payload)
+
+    async def problem(self, user_id: int, message: Any, code: str, key: str | None = None) -> None:
+        title, detail = ERRORS.get(code, ('暂时无法完成操作', MESSAGES.get(code, '请稍后重试，已有内容仍保留。')))
+        rows: list[list[tuple[str, str]]] = []
+        if private(message):
+            if code in {'authorization_required', 'authorization_expired'}:
+                rows.append([('连接 Notion', f'ui:{user_id}:connect')])
+            elif code == 'target_required':
+                rows.append([('选择保存位置', f'ui:{user_id}:targets')])
+            elif code.startswith('llm_'):
+                rows.append([('AI 设置', f'ui:{user_id}:settings')])
+            elif code == 'unsupported_url':
+                rows.append([('支持的平台', f'ui:{user_id}:platforms')])
+            rows.append([('最近文章', f'ui:{user_id}:articles'), ('返回首页', f'ui:{user_id}:home')])
+        if key and self.pending.get(user_id, message.chat.id, key):
+            rows.insert(0, [('查看原文', make_callback(key, 'open')), ('导出全文', make_callback(key, 'export'))])
+        await reply(message, title + '\n\n' + detail, reply_markup=buttons(rows) if rows else None)
+
+    async def task_status(self, user_id: int, message: Any) -> None:
+        task = self.active.get(user_id)
+        activity = self.activities.get(user_id)
+        running = bool(task and not task.done() and task is not asyncio.current_task())
+        if running and activity and activity.chat_id == message.chat.id:
+            text = f'当前任务\n\n{activity.label}\n已用时 {activity.elapsed()}\n完成后会在原位置显示结果。'
+            rows = [[('刷新状态', f'ui:{user_id}:status'), ('取消任务', f'ui:{user_id}:cancel')]]
+        elif running:
+            text = '你在另一个聊天中的任务仍在进行。\n请回到原聊天查看进度或取消。'
+            rows = []
+        else:
+            text = '当前没有正在执行的任务。\n发送链接开始阅读，或继续之前的文章。'
+            rows = []
+        if private(message):
+            rows.append([('最近文章', f'ui:{user_id}:articles'), ('返回首页', f'ui:{user_id}:home')])
+        await reply(message, text, reply_markup=buttons(rows))
+
+    async def busy(self, user_id: int, message: Any) -> None:
+        rows: list[list[tuple[str, str]]] = []
+        if private(message):
+            rows.append([('查看当前任务', f'ui:{user_id}:status'), ('取消任务', f'ui:{user_id}:cancel')])
+        try:
+            urls = message_urls(message)
+        except WorkerError:
+            urls = []
+        if urls:
+            rows.append([self.token_button(user_id, message.chat.id, '任务结束后解析这批链接', 'retry',
+                                           {'kind': 'retry_parse', 'urls': urls})])
+        await reply(message, '当前任务还在进行，这条请求尚未开始。\n可以查看进度，或等任务结束后继续。',
+                    reply_markup=buttons(rows))
+
+    async def help_section(self, user_id: int, message: Any, section: str = '') -> None:
+        title, body = HELP.get(section, ('使用帮助', '按当前需要选择一项。所有常用操作都可以从按钮进入。'))
+        rows = [[('解析与阅读', f'ui:{user_id}:guide:read'), ('AI 操作', f'ui:{user_id}:guide:ai')],
+                [('Notion 保存', f'ui:{user_id}:guide:notion'), ('任务与导出', f'ui:{user_id}:guide:controls')],
+                [('返回首页', f'ui:{user_id}:home')]]
+        await reply(message, title + '\n\n' + body, reply_markup=buttons(rows) if private(message) else None)
+
+    async def model_choices(self, user_id: int, message: Any, offset: int = 0, refresh: bool = False) -> None:
+        snapshot = self.model_catalog.get(user_id)
+        if refresh or not snapshot or time.monotonic() - snapshot[0] > 300:
+            key = ((self.secrets.secret(user_id, 'openai') if self.secrets else '')
+                   or self.settings.openai_api_key.get_secret_value())
+            if not key:
+                await self.problem(user_id, message, 'llm_config_incomplete')
+                return
+            client = ResponsesClient(key, self.settings.openai_model, 'model-list',
+                                     base_url=self.settings.openai_base_url, timeout=15)
+            try:
+                page = await client.client.models.list()
+                models = sorted({item.id for item in page.data if re.fullmatch(r'[\w./:-]{1,100}', item.id)})
+                if self.settings.openai_model in models:
+                    models.remove(self.settings.openai_model)
+                    models.insert(0, self.settings.openai_model)
+                self.model_catalog[user_id] = time.monotonic(), models[:200]
+            except Exception:
+                await reply(message, '暂时无法读取模型列表。\n可以重试，或手动输入服务支持的模型名。',
+                            reply_markup=buttons([
+                    [('重试列表', f'ui:{user_id}:models_refresh'), ('手动输入', f'ui:{user_id}:model_input')],
+                    [('返回设置', f'ui:{user_id}:settings')],
+                ]))
+                return
+            finally:
+                await client.close()
+        models = self.model_catalog[user_id][1]
+        offset = min(max(0, offset), max(0, ((len(models) - 1) // 6) * 6))
+        current = self.pending.preferences(user_id).get('model') or self.settings.openai_model
+        rows = [[self.token_button(user_id, message.chat.id,
+                                   ('✓ ' if model == current else '') + truncate(model, 45), 'choice',
+                                   {'kind': 'model', 'model': model})] for model in models[offset:offset + 6]]
+        nav = []
+        if offset:
+            nav.append(('上一页', f'ui:{user_id}:models:{offset - 6}'))
+        if offset + 6 < len(models):
+            nav.append(('下一页', f'ui:{user_id}:models:{offset + 6}'))
+        if nav:
+            rows.append(nav)
+        rows.extend([[('刷新列表', f'ui:{user_id}:models_refresh'), ('手动输入', f'ui:{user_id}:model_input')],
+                     [('默认模型', f'ui:{user_id}:default_model'), ('返回设置', f'ui:{user_id}:settings')]])
+        await reply(message, f'选择模型 · 当前 {current}\n\n列表来自你的接口。模型须支持结构化文本输出。',
+                    reply_markup=buttons(rows))
+
+    def recovery_button(self, user_id: int, message: Any, key: str, target_id: str) -> tuple[str, str]:
+        return self.token_button(user_id, message.chat.id, '核对 Notion 页面并恢复', 'recover',
+                                 {'kind': 'recover_input', 'key': key, 'target': target_id})
+
+    async def request_recovery(self, user_id: int, message: Any, state: dict[str, Any], value: str) -> None:
+        parsed = urlsplit(value)
+        if parsed.scheme:
+            if parsed.scheme != 'https' or not parsed.hostname or parsed.username or parsed.password or not (
+                parsed.hostname in {'notion.so', 'notion.site', 'www.notion.so', 'www.notion.site',
+                                    'notion.com', 'www.notion.com', 'app.notion.com'}
+                or parsed.hostname.endswith('.notion.site')
+            ):
+                raise ValueError('invalid_notion_link')
+            value = parsed.path.rstrip('/').rsplit('/', 1)[-1][-36:]
+            match = re.search(r'([0-9a-fA-F]{32}|[0-9a-fA-F-]{36})$', value)
+            if not match:
+                raise ValueError('invalid_notion_link')
+            value = match[0]
+        page_id = notion_id(value)
+        _, article, _ = self.selected(user_id, message, state['key'])
+        job = self.secrets.export_status(user_id, article.content_hash, state['target']) if self.secrets else None
+        if not job or job.get('status') != 'unknown':
+            raise ValueError('recovery_not_needed')
+        self.pending.preferences(user_id, {'input': None})
+        await self.approval(message, user_id,
+                            {'kind': 'recover', 'key': state['key'], 'target': state['target'], 'page': page_id},
+                            '确认核对这篇 Notion 页面？\n只会检查已有内容与保存进度，不会重新创建页面。')
 
     async def close(self) -> None:
         await self.worker.close()
@@ -120,6 +257,7 @@ class App:
         if expanded and private_chat and self.settings.llm_enabled:
             actions.extend([("提取标签", "tags"), ("标题建议", "title"), ("整理排版", "normalize_markdown")])
         if expanded and private_chat:
+            actions.append(("重新解析链接", "refresh"))
             actions.append(("移除这篇文章", "remove"))
         if private_chat:
             actions.append(("收起" if expanded else "更多操作", "back" if expanded else "more"))
@@ -130,16 +268,9 @@ class App:
 
     async def home(self, user_id: int, message: Any, *, help_page: bool = False) -> None:
         if help_page:
-            text = (
-                "使用指南\n\n"
-                "1. 直接发送链接或带链接的分享消息，可一次发送多个链接。\n"
-                "2. 每篇文章以一条富消息展示，包含正文、媒体和操作按钮。\n"
-                "3. 点击「摘要」「翻译」处理内容，点击「导出全文」获取 Markdown / HTML。\n"
-                "4. 点击「最近文章」重新打开仍在有效期内的内容。\n\n"
-                "AI 和 Notion 仅在私聊使用。长文与超限媒体会在结果内提示，不逐个刷屏。\n"
-                "处理时可以点击「取消任务」；Notion 写入前会明确要求确认。"
-            )
-        else:
+            await self.help_section(user_id, message)
+            return
+        if not help_page:
             ai = "已开启" if self.settings.llm_enabled and self.pending.preferences(user_id).get("llm") else "已关闭"
             credential = self.secrets.credential(user_id) if self.secrets else None
             targets = self.secrets.targets(user_id) if self.secrets and credential else []
@@ -163,8 +294,12 @@ class App:
 
     async def articles(self, user_id: int, message: Any, offset: int = 0) -> None:
         entries = self.pending.recent(user_id, message.chat.id)
+        offset = min(max(0, offset), max(0, ((len(entries) - 1) // 8) * 8))
         page = entries[offset:offset + 8]
-        rows = [[(truncate(item["title"] or "无标题", 42), make_callback(item["id"], "open"))] for item in page]
+        current = self.current_key(user_id, message.chat.id)
+        rows = [[(("▶ " if item["id"] == current else "") + truncate(item["title"] or "无标题", 32)
+                  + f" · {max(1, int((item['expires'] - time.time()) / 60))}分",
+                  make_callback(item["id"], "open"))] for item in page]
         nav = []
         if offset:
             nav.append(("上一页", f"ui:{user_id}:articles:{max(0, offset - 8)}"))
@@ -173,7 +308,7 @@ class App:
         if nav:
             rows.append(nav)
         rows.append([("返回首页", f"ui:{user_id}:home")])
-        text = (f"最近文章 · {len(entries)} 篇\n点击标题重新打开文章。" if entries else
+        text = (f"最近文章 · {len(entries)} 篇\n▶ 表示当前文章；时间为剩余可操作时间。" if entries else
                 "还没有可用文章。\n请直接发送链接，解析后会出现在这里。")
         await reply(message, text, reply_markup=buttons(rows))
 
@@ -181,14 +316,16 @@ class App:
         snapshot = await self.worker.capabilities()
         await reply(message, "当前支持的平台\n\n" + snapshot.names +
                     "\n\n直接发送原文链接即可。部分平台需要管理员配置 Cookie，登录受限内容可能无法解析。",
-                    reply_markup=menu(user_id))
+                    reply_markup=menu(user_id) if private(message) else None)
 
     async def approval(self, message: Any, user_id: int, payload: dict[str, Any], description: str) -> None:
         key = self.pending.approve(user_id, message.chat.id, payload)
+        label = {"save": "确认保存", "remove": "确认移除", "recover": "确认核对",
+                 "disconnect_notion": "确认断开"}.get(payload.get("kind", ""), "确认执行")
         await reply(
             message,
             description,
-            reply_markup=buttons([[("确认执行", f"confirm:{key}"), ("取消", f"dismiss:{key}")]]),
+            reply_markup=buttons([[(label, f"confirm:{key}"), ("取消", f"dismiss:{key}")]]),
         )
 
     def current_key(self, user_id: int, chat_id: int) -> str | None:
@@ -209,15 +346,25 @@ class App:
             self.pending.preferences(user_id, {"selected_articles": dict(list(selections.items())[-32:])})
         return key, result[0], result[1]
 
-    async def read(self, user_id: int, message: Any, urls: list[str]) -> None:
-        progress = Progress(message, user_id)
+    async def read(self, user_id: int, message: Any, urls: list[str], *, force: bool = False) -> None:
+        progress = Progress(message, user_id, self.activities.get(user_id))
         succeeded = 0
         failures: list[str] = []
+        retry_urls: list[str] = []
         for index, url in enumerate(urls, 1):
             prepared = None
             key = None
             try:
                 await progress.update(f"正在解析 {index}/{len(urls)}\n{url}\n页面和媒体准备可能需要一些时间。")
+                cached_key = self.pending.find_url(user_id, message.chat.id, url) if not force else None
+                if cached_key:
+                    _, cached_article, _ = self.selected(user_id, message, cached_key)
+                    await progress.update(f"正在打开已有结果 {index}/{len(urls)}")
+                    await send_preview(message, cached_article, self.worker,
+                                       self.keyboard(cached_key, user_id, private_chat=private(message)),
+                                       self.pending.minutes_left(user_id, message.chat.id, cached_key))
+                    succeeded += 1
+                    continue
                 if self.pending.count(user_id) >= self.settings.reader_max_pending_per_user:
                     failures.append("待处理文章已达上限。可在文章「更多操作」中移除旧文章，或等待其过期。")
                     break
@@ -235,6 +382,7 @@ class App:
             except DeliveryUncertain:
                 failures.append(f"第 {index} 篇发送结果未确认，请先查看聊天；可从 /articles 找回原文。")
             except WorkerError as error:
+                retry_urls.append(url)
                 failures.append(f"第 {index} 篇：" + MESSAGES.get(error.code, "解析未成功，请稍后重试。"))
             except asyncio.CancelledError:
                 if key:
@@ -243,6 +391,7 @@ class App:
                 await progress.update("解析已取消。已发送的其他文章仍可使用。", done=True)
                 return
             except Exception:
+                retry_urls.append(url)
                 failures.append(f"第 {index} 篇未能完成发送，请稍后重试。")
                 if key:
                     self.pending.delete(key)
@@ -255,15 +404,23 @@ class App:
                         except WorkerError:
                             pass
         if failures:
-            await progress.update(f"处理完成：成功 {succeeded}/{len(urls)}\n" + "\n".join(failures), done=True)
+            rows = [[self.token_button(user_id, message.chat.id, "重试未完成的链接", "retry",
+                                       {"kind": "retry_parse", "urls": retry_urls})]] if retry_urls else []
+            if private(message):
+                rows.append([("最近文章", f"ui:{user_id}:articles"), ("支持的平台", f"ui:{user_id}:platforms")])
+            await progress.update(f"处理完成：成功 {succeeded}/{len(urls)}\n" + "\n".join(failures),
+                                  done=True, markup=buttons(rows))
         else:
             await progress.clear()
 
     async def file(self, message: Any, article: Article, action: str) -> None:
         content = article.markdown if action == "markdown" else article.html
         stream = io.BytesIO(content.encode("utf-8"))
-        stream.name = "article.md" if action == "markdown" else "article.html"
-        await message.reply_document(stream, file_name=stream.name)
+        stream.name = safe_filename(article.title, "md" if action == "markdown" else "html")
+        label = "Markdown · 适合编辑和复制" if action == "markdown" else "HTML · 可在浏览器离线阅读"
+        await message.reply_document(stream, file_name=stream.name,
+                                     caption=truncate(article.title or "文章", 250) + "\n完整原文 · " + label,
+                                     parse_mode=enums.ParseMode.DISABLED)
 
     def llm_client(self, user_id: int, text: str) -> ResponsesClient:
         prefs = self.pending.preferences(user_id)
@@ -326,7 +483,11 @@ class App:
         except asyncio.CancelledError:
             await progress.update("AI 任务已取消，原文保留。", done=True)
         except LLMError as error:
-            await progress.update(MESSAGES.get(str(error), "AI 暂时未完成，原文保留，可稍后重试。"), done=True)
+            title, detail = ERRORS.get(str(error), ("AI 暂时未完成", "原文已保留，可稍后重试。"))
+            await progress.update(title + "\n" + detail, done=True, markup=buttons([
+                [("重试生成", make_callback(key, "regen_" + operation)), ("导出原文", make_callback(key, "export"))],
+                [("AI 设置", f"ui:{user_id}:settings")],
+            ]))
         except Exception:
             await progress.update("AI 结果未能展示；可用文章的「更多操作 → 导出 AI 结果」查看已保存内容。", done=True)
         finally:
@@ -344,15 +505,26 @@ class App:
             )
         except asyncio.CancelledError:
             await progress.update("已停止等待 Notion 保存。部分写入可能已完成，"
-                                  "请检查 Notion 后再决定是否重试。", done=True)
+                                  "请检查 Notion 后再决定是否重试。", done=True, markup=buttons([
+                                      [self.recovery_button(user_id, message, key, target_id)],
+                                      [("查看原文", make_callback(key, "open")),
+                                       ("Notion 设置", f"ui:{user_id}:notion")],
+                                  ]))
             return
         except NotionError as error:
-            await progress.update(MESSAGES.get(error.code, "Notion 保存未完成，原文和媒体保留，请检查授权后重试。"),
-                                  done=True)
+            retry = self.token_button(user_id, message.chat.id, "重新确认保存", "saveagain",
+                                      {"kind": "continue_save", "key": key, "target": target_id})
+            rows = ([[self.recovery_button(user_id, message, key, target_id)]]
+                    if error.code == "write_outcome_unknown" else [[retry]])
+            rows.append([("Notion 设置", f"ui:{user_id}:notion"), ("查看原文", make_callback(key, "open"))])
+            title, detail = ERRORS.get(error.code, ("Notion 保存未完成", "原文和媒体保留，请检查授权后重试。"))
+            await progress.update(title + "\n" + detail, done=True, markup=buttons(rows))
             return
-        await progress.clear()
-        await reply(message, "已保存到 Notion。" + ("\n部分媒体以外链或说明保留。" if result["warnings"] else ""),
-                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("打开 Notion 页面", url=result["url"])]]))
+        await progress.update("已保存到 Notion。" + ("\n部分媒体以外链或说明保留。" if result["warnings"] else ""),
+                              done=True, markup=InlineKeyboardMarkup([
+                                  [InlineKeyboardButton("打开 Notion 页面", url=result["url"])],
+                                  [InlineKeyboardButton("查看原文", callback_data=make_callback(key, "open"))],
+                              ]))
         for lease in leases:
             try:
                 await self.worker.release(lease)
@@ -360,7 +532,7 @@ class App:
                 pass
         self.pending.clear_leases(key)
 
-    async def request_save(self, user_id: int, message: Any, key: str) -> None:
+    async def request_save(self, user_id: int, message: Any, key: str, target_id: str | None = None) -> None:
         _, article, _ = self.selected(user_id, message, key)
         self.pending.preferences(user_id, {"notion_resume": {"key": key, "chat_id": message.chat.id}})
         if not self.notion:
@@ -369,7 +541,7 @@ class App:
             await self.notion_command(user_id, message, ["connect"])
             return
         try:
-            target = self.notion.target(user_id)
+            target = self.notion.target(user_id, target_id)
         except NotionError:
             await self.notion_targets(user_id, message)
             return
@@ -420,6 +592,7 @@ class App:
                         if credential else "尚未连接 Notion。请点击下方按钮完成授权。",
                         reply_markup=buttons([[(("选择保存位置" if credential else "连接 Notion"),
                                                  f"ui:{user_id}:" + ("targets" if credential else "connect"))],
+                                              *([[("断开 Notion", f"ui:{user_id}:disconnect")]] if credential else []),
                                               [("返回首页", f"ui:{user_id}:home")]]))
 
     async def settings_command(self, user_id: int, message: Any, args: list[str]) -> None:
@@ -431,7 +604,7 @@ class App:
         elif len(args) == 2 and args[0] == "language" and re.fullmatch(r"[\w-]{1,40}", args[1]):
             update["language"] = args[1]
         elif len(args) == 2 and args[0] == "model":
-            if not re.fullmatch(r"[\w.:-]{1,100}", args[1]):
+            if not re.fullmatch(r"[\w./:-]{1,100}", args[1]):
                 raise ValueError("模型名无效。")
             update = {"model": args[1]}
         elif len(args) == 2 and args[0] == "key":
@@ -442,6 +615,7 @@ class App:
             if not self.secrets:
                 raise ValueError("管理员需先配置凭据加密密钥。")
             self.secrets.secret(user_id, "openai", "" if args[1] == "clear" else args[1])
+            self.model_catalog.pop(user_id, None)
             await self.bot.send_message(user_id, "个人 OpenAI Key 已更新。", parse_mode=enums.ParseMode.DISABLED)
             return
         if args and not update:
@@ -460,7 +634,7 @@ class App:
                 [("关闭 AI" if prefs["llm"] else "开启 AI", f"ui:{user_id}:llm:" + ("off" if prefs["llm"] else "on"))],
                 [("翻译为中文", f"ui:{user_id}:language:zh-CN"), ("翻译为英文", f"ui:{user_id}:language:en")],
                 [("选择模型", f"ui:{user_id}:models"), ("思考强度", f"ui:{user_id}:reasoning")],
-                [("返回首页", f"ui:{user_id}:home")],
+                [("恢复默认设置", f"ui:{user_id}:reset_settings"), ("返回首页", f"ui:{user_id}:home")],
             ]),
         )
 
@@ -546,6 +720,23 @@ class App:
         )
         await executor.run(ActionPlan.model_validate(payload["plan"]), confirmed=True)
 
+    async def private_prompt(self, message: Any) -> None:
+        user = getattr(self.bot, "me", None) if self.bot else None
+        username = getattr(user, "username", None)
+        markup = (InlineKeyboardMarkup([[InlineKeyboardButton("打开私聊", url="https://t.me/" + username)]])
+                  if username else None)
+        await reply(message, "这个功能需要在私聊中使用。请打开机器人私聊，再发送文章链接或选择已有文章。",
+                    reply_markup=markup)
+
+    async def unsupported_input(self, client: Any, message: Any) -> None:
+        user_id = int(message.from_user.id) if message.from_user else 0
+        if user_id not in self.settings.allowed_users:
+            await self.dispatch(client, message)
+            return
+        await reply(message, "请发送网页链接，或在分享图片/视频时附上原文链接。\n"
+                    "目前不能直接解析上传文件或截图中的正文。",
+                    reply_markup=menu(user_id))
+
     async def dispatch(self, client: Any, message: Any) -> None:
         user_id = int(message.from_user.id) if message.from_user else 0
         text = message.text or getattr(message, "caption", None) or ""
@@ -576,17 +767,38 @@ class App:
             else:
                 await reply(message, "当前没有正在执行的任务，已有文章已保留。", reply_markup=menu(user_id))
             return
+        if command == "/status":
+            await self.task_status(user_id, message)
+            return
         lock = self.locks.setdefault(user_id, asyncio.Lock())
         if lock.locked():
-            await reply(message, "正在处理上一个请求，可用 /cancel 取消。")
+            if command in {"/start", "/help"}:
+                await self.home(user_id, message, help_page=command == "/help")
+            else:
+                await self.busy(user_id, message)
             return
         async with lock:
             task = asyncio.current_task()
             if task:
                 self.active[user_id] = task
                 self.active_chat[user_id] = message.chat.id
+                self.activities[user_id] = Activity(message.chat.id)
             try:
                 pending_input = self.pending.preferences(user_id).get("input") or {}
+                if (pending_input and pending_input.get("chat_id") == message.chat.id
+                        and pending_input.get("expires", 0) <= time.time()):
+                    self.pending.preferences(user_id, {"input": None})
+                    await reply(message, "这次输入已过期，本条内容未被处理。\n请重新打开设置或核对恢复入口。",
+                                reply_markup=menu(user_id))
+                    return
+                if (private(message) and pending_input.get("kind") == "notion_recover"
+                        and pending_input.get("chat_id") == message.chat.id
+                        and pending_input.get("expires", 0) > time.time() and not command.startswith("/")):
+                    try:
+                        await self.request_recovery(user_id, message, pending_input, text.strip())
+                    except (ValueError, NotionError):
+                        await reply(message, "请发送那篇 Notion 页面的链接或页面 ID。\n要退出可发送 /cancel。")
+                    return
                 if (private(message) and pending_input.get("chat_id") == message.chat.id
                         and pending_input.get("expires", 0) > time.time() and not command.startswith("/")
                         and not message_urls(message)):
@@ -612,7 +824,7 @@ class App:
                                 reply_markup=menu(user_id))
                 elif command in {"/notion", "/settings", "/summary", "/translate", "/agent"}:
                     if not private(message):
-                        await reply(message, "此操作仅支持私聊。")
+                        await self.private_prompt(message)
                     elif command == "/notion":
                         await self.notion_command(user_id, message, tokens[1:])
                     elif command == "/settings":
@@ -632,20 +844,20 @@ class App:
                         else:
                             await self.home(user_id, message)
                     else:
-                        await reply(message, "请发送支持平台的 URL。")
+                        await self.problem(user_id, message, "invalid_input")
             except asyncio.CancelledError:
                 await reply(message, "任务已取消。")
             except (WorkerError, NotionError, LLMError) as error:
                 code = error.code if isinstance(error, (WorkerError, NotionError)) else str(error)
-                await reply(message, MESSAGES.get(code, "操作失败，原文已保留；请检查配置后重试。"))
+                await self.problem(user_id, message, code, self.current_key(user_id, message.chat.id))
             except ValueError:
-                await reply(message, "没有找到可用文章，或命令参数不正确。\n"
-                            "请先发送链接；已有文章可点击「最近文章」重新打开。", reply_markup=menu(user_id))
+                await self.problem(user_id, message, "article_expired")
             except Exception:
-                await reply(message, "操作暂时失败，请稍后重试。")
+                await self.problem(user_id, message, "unknown")
             finally:
                 self.active.pop(user_id, None)
                 self.active_chat.pop(user_id, None)
+                self.activities.pop(user_id, None)
 
     async def notion_targets(self, user_id: int, message: Any, offset: int = 0) -> None:
         if not self.notion or not self.secrets:
@@ -655,7 +867,10 @@ class App:
             await self.notion_command(user_id, message, ['connect'])
             return
         values = await self.notion.targets(user_id)
-        rows = [[(truncate(t['title'] or '未命名页面', 40), f"ui:{user_id}:target:{t['id']}")]
+        values.sort(key=lambda item: (not item.get("default", False), item.get("title", "")))
+        offset = min(max(0, offset), max(0, ((len(values) - 1) // 8) * 8))
+        rows = [[(('✓ ' if t.get('default') else '') + truncate(t['title'] or '未命名页面', 32)
+                  + (' · 数据源' if t.get('kind') == 'data_source' else ' · 页面'), f"ui:{user_id}:target:{t['id']}")]
                 for t in values[offset:offset + 8]]
         nav = []
         if offset:
@@ -664,7 +879,9 @@ class App:
             nav.append(('下一页', f'ui:{user_id}:targets:{offset + 8}'))
         if nav:
             rows.append(nav)
-        rows.append([('返回首页', f'ui:{user_id}:home')])
+        rows.append([('刷新位置', f'ui:{user_id}:targets'), ('Notion 设置', f'ui:{user_id}:notion')])
+        if self.pending.preferences(user_id).get('notion_resume'):
+            rows.append([('暂不保存', f'ui:{user_id}:skip_save')])
         await reply(message, '选择 Notion 保存位置\n点击一个页面或数据源。' if values else
                     '暂无可保存的位置。\n请在 Notion 中把目标页面授权给此 Integration，再重新加载。',
                     reply_markup=buttons(rows))
@@ -701,18 +918,35 @@ class App:
             await reply(panel, "把链接发到当前聊天即可。\n支持直接粘贴链接、转发带链接的文字，或发送带链接的图片说明。",
                         reply_markup=buttons([[('支持的平台', f'ui:{user_id}:platforms'),
                                                ('返回首页', f'ui:{user_id}:home')]]))
-        elif action == 'models':
-            await reply(panel, "选择模型\n默认模型适合阅读、摘要和翻译。也可以输入服务支持的其他模型名。",
-                        reply_markup=buttons([[('默认 · ' + self.settings.openai_model, f'ui:{user_id}:default_model')],
-                                              [('输入其他模型', f'ui:{user_id}:model_input')],
-                                              [('返回设置', f'ui:{user_id}:settings')]]))
+        elif action in {'models', 'models_refresh'}:
+            await self.model_choices(user_id, panel, int(arg or 0), refresh=action == 'models_refresh')
+        elif action == 'status':
+            await self.task_status(user_id, panel)
+        elif action == 'guide':
+            await self.help_section(user_id, panel, arg)
+        elif action == 'reset_settings':
+            self.pending.preferences(user_id, {'model': '', 'reasoning_effort': '', 'language': 'zh-CN', 'llm': True})
+            await self.settings_command(user_id, panel, [])
+        elif action == 'skip_save':
+            self.pending.preferences(user_id, {'notion_resume': None, 'input': None})
+            await reply(panel, '已退出保存设置，原文章已保留。', reply_markup=menu(user_id))
+        elif action == 'disconnect':
+            if not self.secrets or not self.secrets.credential(user_id):
+                await self.notion_command(user_id, panel, [])
+            else:
+                await self.approval(panel, user_id, {'kind': 'disconnect_notion'},
+                                    '断开 Notion 连接？\n将移除本机授权和保存位置，已保存的 Notion 页面不会被删除。')
         elif action == 'model_input':
             self.pending.preferences(user_id, {'input': {'chat_id': message.chat.id, 'expires': time.time() + 300}})
             await reply(panel, "请直接发送模型名，例如 gpt-6.1-sol。\n五分钟内有效；发送链接会退出设置并开始解析。",
                         reply_markup=buttons([[('取消输入', f'ui:{user_id}:input_cancel')]]))
         elif action == 'input_cancel':
+            state = self.pending.preferences(user_id).get('input') or {}
             self.pending.preferences(user_id, {'input': None})
-            await self.settings_command(user_id, panel, [])
+            if state.get('kind') == 'notion_recover':
+                await reply(panel, '已退出核对，原文和已有保存进度保留。', reply_markup=menu(user_id))
+            else:
+                await self.settings_command(user_id, panel, [])
         elif action == 'reasoning':
             await reply(panel, "选择思考强度\n高：适合复杂文章\n中：平衡深度和等待时间\n低：适合简单任务",
                         reply_markup=buttons([[('高', f'ui:{user_id}:effort:high'),
@@ -744,44 +978,90 @@ class App:
     async def callback(self, client: Any, query: Any) -> None:
         uid = int(query.from_user.id)
         message = query.message
+        answered = False
+
+        async def ack(text: str = "", *, show_alert: bool = False) -> None:
+            nonlocal answered
+            if answered:
+                if text and message is not None:
+                    await reply(message, text, reply_markup=menu(uid) if private(message) else None)
+                return
+            answered = True
+            try:
+                await query.answer(text, show_alert=show_alert)
+            except RPCError:
+                pass
+
         if uid not in self.settings.allowed_users or message is None:
-            await query.answer("无权限", show_alert=True)
+            await ack("无权限", show_alert=True)
             return
         data = str(query.data or "")
         if data == f"ui:{uid}:cancel":
             task = self.active.get(uid)
             if task and not task.done() and self.active_chat.get(uid) == message.chat.id:
                 task.cancel()
-                await query.answer("正在取消")
+                await ack("正在取消")
             else:
-                await query.answer("当前聊天没有正在执行的任务。")
+                await ack("当前聊天没有正在执行的任务。")
+            return
+        if private(message) and data in {f"ui:{uid}:status", f"ui:{uid}:home", f"ui:{uid}:help"}:
+            await ack()
+            await self.menu_action(uid, message, data)
             return
         lock = self.locks.setdefault(uid, asyncio.Lock())
         if lock.locked():
-            await query.answer("正在处理，请稍候。")
+            await ack("任务仍在进行，可点击进度中的查看状态或取消。", show_alert=True)
             return
         async with lock:
             task = asyncio.current_task()
             if task:
                 self.active[uid] = task
                 self.active_chat[uid] = message.chat.id
+                self.activities[uid] = Activity(message.chat.id)
             try:
                 data = str(query.data or "")
+                if data.startswith(("retry:", "choice:", "recover:", "saveagain:")):
+                    payload = self.pending.consume(uid, message.chat.id, data.split(":", 1)[1])
+                    kinds = {"retry": "retry_parse", "choice": "model",
+                             "recover": "recover_input", "saveagain": "continue_save"}
+                    expected = kinds[data.split(":", 1)[0]]
+                    if not payload or payload.get("kind") != expected:
+                        raise ValueError("expired")
+                    if expected != "retry_parse" and not private(message):
+                        raise PermissionError
+                    await ack()
+                    if expected == "retry_parse":
+                        await self.read(uid, message, payload["urls"])
+                    elif expected == "continue_save":
+                        await self.request_save(uid, message, payload["key"], payload["target"])
+                    elif expected == "model":
+                        await self.settings_command(uid, Panel(message), ["model", payload["model"]])
+                    else:
+                        self.selected(uid, message, payload["key"])
+                        self.pending.preferences(uid, {"input": {**payload, "kind": "notion_recover",
+                                                                "chat_id": message.chat.id,
+                                                                "expires": time.time() + 300}})
+                        await reply(message, "请把需要核对的 Notion 页面链接发到这里。\n"
+                                    "只会核对保存进度，确认后才恢复。发送 /cancel 可退出。", reply_markup=buttons([
+                                        [("取消核对", f"ui:{uid}:input_cancel")],
+                                    ]))
+                    return
                 if data.startswith("ui:"):
                     if data.split(":")[1] != str(uid):
-                        await query.answer("这是其他用户的操作面板，请发送 /start 打开自己的面板。", show_alert=True)
+                        await ack("这是其他用户的操作面板，请发送 /start 打开自己的面板。", show_alert=True)
                         return
                     if not private(message):
                         raise PermissionError
-                    await query.answer()
+                    await ack()
                     await self.menu_action(uid, message, data)
                     return
                 if data.startswith("dismiss:"):
                     payload = self.pending.consume(uid, message.chat.id, data.split(":", 1)[1])
                     if not payload:
                         raise ValueError("expired")
-                    await query.answer("已取消")
-                    await message.edit_text("已取消，本次不会写入或执行计划。", reply_markup=None)
+                    await ack("已取消")
+                    await reply(Panel(message), "已取消，本次不会写入或执行计划。",
+                                reply_markup=menu(uid))
                     return
                 if data.startswith("confirm:"):
                     if not private(message):
@@ -789,8 +1069,19 @@ class App:
                     payload = self.pending.consume(uid, message.chat.id, data.split(":", 1)[1])
                     if not payload:
                         raise ValueError("expired")
-                    self.selected(uid, message, payload["key"])
-                    await query.answer("正在执行")
+                    if payload["kind"] != "disconnect_notion":
+                        self.selected(uid, message, payload["key"])
+                    await ack("正在执行")
+                    try:
+                        await message.edit_reply_markup(None)
+                    except RPCError:
+                        pass
+                    if payload["kind"] == "disconnect_notion":
+                        if self.secrets:
+                            self.secrets.disconnect(uid)
+                        self.pending.preferences(uid, {"notion_resume": None})
+                        await self.notion_command(uid, Panel(message), [])
+                        return
                     if payload.get("add_schema"):
                         if not self.notion:
                             raise NotionError("authorization_required")
@@ -816,7 +1107,11 @@ class App:
                             raise NotionError("authorization_required")
                         _, article, _ = self.selected(uid, message, payload["key"])
                         await self.notion.reconcile(uid, article, payload["target"], payload["page"])
-                        await reply(message, "已恢复进度，可以重试保存。")
+                        await reply(message, "已核对保存进度。\n点击下方按钮继续，仍会先确认保存位置。",
+                                    reply_markup=buttons([[self.token_button(
+                                        uid, message.chat.id, "继续确认保存", "saveagain",
+                                        {"kind": "continue_save", "key": payload["key"],
+                                         "target": payload["target"]})]]))
                     else:
                         await self.execute_plan(uid, message, payload)
                     return
@@ -827,22 +1122,25 @@ class App:
                 _, article, _ = self.selected(uid, message, key)
                 if action not in {"markdown", "html", "export", "more", "back", "open"} and not private(message):
                     raise PermissionError
-                await query.answer("正在处理")
+                await ack("正在处理")
                 if action in {"more", "back"}:
                     markup = self.keyboard(key, uid, private_chat=private(message), expanded=action == "more")
                     if action == "more" and private(message) and self.pending.derived(uid, key):
                         markup.inline_keyboard.append([
                             InlineKeyboardButton("导出 AI 结果", callback_data=make_callback(key, "ai_file"))])
                     await message.edit_reply_markup(markup)
+                elif action == "refresh":
+                    await self.read(uid, message, [article.source.original_url], force=True)
                 elif action == "export":
                     await message.edit_reply_markup(buttons([
-                        [("Markdown", make_callback(key, "markdown")), ("HTML", make_callback(key, "html"))],
+                        [("Markdown · 编辑", make_callback(key, "markdown")),
+                         ("HTML · 阅读", make_callback(key, "html"))],
                         [("返回操作", make_callback(key, "back"))],
                     ]))
                 elif action == "open":
                     await send_preview(message, article, self.worker,
                                        self.keyboard(key, uid, private_chat=private(message)),
-                                       self.settings.reader_pending_ttl // 60)
+                                       self.pending.minutes_left(uid, message.chat.id, key))
                 elif action == "ai_file":
                     values = self.pending.derived(uid, key)
                     labels = {"summary": "摘要", "translated_markdown": "翻译", "tags": "标签",
@@ -853,8 +1151,11 @@ class App:
                     if not content:
                         raise ValueError("no_ai_result")
                     stream = io.BytesIO(content.encode())
-                    stream.name = "article-ai.md"
-                    await message.reply_document(stream, file_name=stream.name)
+                    stream.name = safe_filename(article.title + "-AI结果", "md")
+                    await message.reply_document(stream, file_name=stream.name,
+                                                 caption=truncate(article.title or "文章", 250)
+                                                 + "\n已生成的 AI 结果汇总",
+                                                 parse_mode=enums.ParseMode.DISABLED)
                 elif action in {"markdown", "html"}:
                     await self.file(message, article, action)
                 elif action == "remove":
@@ -868,17 +1169,20 @@ class App:
             except asyncio.CancelledError:
                 await reply(message, "任务已取消。")
             except PermissionError:
-                await query.answer("此操作仅支持私聊。", show_alert=True)
+                await ack()
+                await self.private_prompt(message)
             except ValueError:
-                await query.answer("此按钮已过期或不属于你，请发送 /articles 打开自己的文章。", show_alert=True)
+                await ack()
+                await self.problem(uid, message, "article_expired" if data.startswith("article:") else "action_expired")
             except (NotionError, WorkerError, LLMError) as error:
                 code = error.code if isinstance(error, (NotionError, WorkerError)) else str(error)
-                await reply(message, MESSAGES.get(code, "操作失败，原文已保留，可以稍后重试。"))
+                await self.problem(uid, message, code, self.current_key(uid, message.chat.id))
             except Exception:
-                await reply(message, "操作暂时失败，原文已保留。")
+                await self.problem(uid, message, "unknown", self.current_key(uid, message.chat.id))
             finally:
                 self.active.pop(uid, None)
                 self.active_chat.pop(uid, None)
+                self.activities.pop(uid, None)
 
     async def maintain(self) -> None:
         while True:
@@ -926,6 +1230,9 @@ class App:
             parse_mode=enums.ParseMode.DISABLED,
         )
         self.bot.add_handler(MessageHandler(self.dispatch, filters.incoming & (filters.text | filters.caption)))
+        self.bot.add_handler(MessageHandler(
+            self.unsupported_input, filters.incoming & filters.private & ~filters.caption &
+            (filters.photo | filters.video | filters.document | filters.voice | filters.audio | filters.sticker)))
         self.bot.add_handler(CallbackQueryHandler(self.callback))
         runner = None
         task = None
