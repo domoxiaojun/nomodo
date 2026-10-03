@@ -21,7 +21,7 @@ def menu(user_id: int) -> types.InlineKeyboardMarkup:
     prefix = f'ui:{user_id}:'
     return buttons([
         [('发送链接', prefix + 'read'), ('最近文章', prefix + 'articles')],
-        [('AI 设置', prefix + 'settings'), ('Notion', prefix + 'notion')],
+        [('AI 设置', prefix + 'settings'), ('Notion 连接与设置', prefix + 'notion')],
         [('当前任务', prefix + 'status'), ('使用帮助', prefix + 'help')],
     ])
 

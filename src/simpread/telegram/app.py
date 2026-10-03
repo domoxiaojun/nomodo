@@ -276,7 +276,7 @@ class App:
             targets = self.secrets.targets(user_id) if self.secrets and credential else []
             chosen = next((t for t in targets if t.get("default")), None)
             notion = ("已连接 · " + (chosen["title"] or "已选保存位置") if chosen else
-                      "已连接 · 待选择保存位置" if credential else "等待连接" if self.oauth else "管理员尚未配置")
+                      "已连接 · 待选择保存位置" if credential else "尚未授权" if self.oauth else "管理员尚未配置")
             text = ("阅读助手\n\n发送一个文章或视频链接，开始解析。\n"
                     "结果中可直接阅读、查看媒体、生成摘要或导出全文。\n\n"
                     f"AI：{ai}\nNotion：{notion}\n"
@@ -290,6 +290,22 @@ class App:
             markup.inline_keyboard.insert(0, [InlineKeyboardButton(
                 "继续阅读 · " + truncate(current.title or "最近文章", 28),
                 callback_data=make_callback(latest, "open"))])
+        if private(message) and self.oauth and not credential:
+            text += (
+                "\n\n连接 Notion，只需三步：\n"
+                "① 点击下方「连接我的 Notion」，登录并选择允许访问的页面。\n"
+                "② 完成授权后返回机器人，选择文章保存位置。\n"
+                "③ 打开一篇文章，点击「保存到 Notion」并确认。\n"
+                "这是你个人账号的授权；阅读、AI 和文件导出可以先使用。"
+            )
+            markup.inline_keyboard.insert(0, [InlineKeyboardButton(
+                "① 连接我的 Notion", url=self.oauth.begin(user_id))])
+            markup.inline_keyboard.insert(1, [InlineKeyboardButton(
+                "我已授权，继续下一步", callback_data=f"ui:{user_id}:targets")])
+        elif private(message) and credential and not chosen:
+            text += "\n\nNotion 已授权。下一步请选择保存文章的页面或数据源。"
+            markup.inline_keyboard.insert(0, [InlineKeyboardButton(
+                "② 选择 Notion 保存位置", callback_data=f"ui:{user_id}:targets")])
         await reply(message, text, reply_markup=markup if private(message) else None)
 
     async def articles(self, user_id: int, message: Any, offset: int = 0) -> None:
@@ -560,14 +576,21 @@ class App:
                         "管理员配置授权后，再从这里连接并选择保存位置。", reply_markup=menu(user_id))
             return
         command = args[0] if args else "status"
+        if command == "status" and not self.secrets.credential(user_id):
+            command = "connect"
         if command == "connect":
             if not self.oauth:
                 await reply(message, "管理员尚未配置 Notion OAuth。")
             else:
-                await reply(message, "连接你的 Notion\n授权后返回这里，点击「选择保存位置」。",
+                await reply(message, "连接你的 Notion\n\n"
+                            "① 点击「连接我的 Notion」，在浏览器中登录。\n"
+                            "② 选择允许机器人访问的页面并完成授权。\n"
+                            "③ 返回这里，点击「我已授权，选择保存位置」。\n\n"
+                            "尚未收到授权结果时，可以用下方按钮重新开始；授权链接约 10 分钟有效。",
                             reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("打开 Notion 授权", url=self.oauth.begin(user_id))],
-                    [InlineKeyboardButton("选择保存位置", callback_data=f"ui:{user_id}:targets")],
+                    [InlineKeyboardButton("① 连接我的 Notion", url=self.oauth.begin(user_id))],
+                    [InlineKeyboardButton("我已授权，选择保存位置", callback_data=f"ui:{user_id}:targets")],
+                    [InlineKeyboardButton("暂不连接，返回首页", callback_data=f"ui:{user_id}:home")],
                 ]))
         elif command == "disconnect":
             self.secrets.disconnect(user_id)
