@@ -28,6 +28,9 @@ class PendingStore:
             CREATE TABLE IF NOT EXISTS approvals (
                 id TEXT PRIMARY KEY, user_id INTEGER, chat_id INTEGER, payload TEXT, expires REAL);
             CREATE TABLE IF NOT EXISTS settings (user_id INTEGER PRIMARY KEY, payload TEXT);
+            CREATE TABLE IF NOT EXISTS ai_results (
+                user_id INTEGER, article_id TEXT, field TEXT, signature TEXT, value TEXT,
+                PRIMARY KEY(user_id, article_id, field));
         """)
         self.db.commit()
 
@@ -91,6 +94,26 @@ class PendingStore:
     def delete(self, key: str) -> None:
         with self.db:
             self.db.execute("DELETE FROM articles WHERE id=?", (key,))
+            self.db.execute("DELETE FROM ai_results WHERE article_id=?", (key,))
+
+    def cached_ai(self, user_id: int, key: str, field: str, signature: str) -> Any:
+        row = self.db.execute(
+            "SELECT value FROM ai_results WHERE user_id=? AND article_id=? AND field=? AND signature=?",
+            (user_id, key, field, signature),
+        ).fetchone()
+        return json.loads(row[0]) if row else None
+
+    def save_ai(self, user_id: int, key: str, field: str, signature: str, value: Any) -> None:
+        with self.db:
+            row = self.db.execute("SELECT derived FROM articles WHERE id=? AND user_id=?", (key, user_id)).fetchone()
+            if not row:
+                raise ValueError("article_expired")
+            derived = json.loads(row[0])
+            derived[field] = value
+            self.db.execute("UPDATE articles SET derived=? WHERE id=? AND user_id=?",
+                            (json.dumps(derived), key, user_id))
+            self.db.execute("INSERT OR REPLACE INTO ai_results VALUES (?,?,?,?,?)",
+                            (user_id, key, field, signature, json.dumps(value)))
 
     def derived(self, user_id: int, key: str, value: dict[str, Any] | None = None) -> dict[str, Any]:
         row = self.db.execute("SELECT derived FROM articles WHERE id=? AND user_id=?", (key, user_id)).fetchone()

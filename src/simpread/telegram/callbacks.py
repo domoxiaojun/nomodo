@@ -4,7 +4,9 @@ from simpread.domain import Article
 
 ACTIONS = {
     "save", "summary", "title", "tags", "translate", "normalize_markdown",
-    "markdown", "html", "open", "more", "back", "export", "ai_file",
+    "markdown", "html", "open", "more", "back", "export", "ai_file", "remove",
+    "regen_summary", "regen_translate", "regen_tags",
+    "regen_title", "regen_normalize_markdown",
 }
 
 

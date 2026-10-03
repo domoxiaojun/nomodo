@@ -17,9 +17,9 @@ def buttons(rows: list[list[tuple[str, str]]]) -> types.InlineKeyboardMarkup:
 def menu(user_id: int) -> types.InlineKeyboardMarkup:
     prefix = f'ui:{user_id}:'
     return buttons([
-        [('怎么使用', prefix + 'help'), ('最近文章', prefix + 'articles')],
+        [('发送链接', prefix + 'read'), ('最近文章', prefix + 'articles')],
         [('AI 设置', prefix + 'settings'), ('Notion', prefix + 'notion')],
-        [('支持的平台', prefix + 'platforms')],
+        [('使用帮助', prefix + 'help'), ('支持的平台', prefix + 'platforms')],
     ])
 
 

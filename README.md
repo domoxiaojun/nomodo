@@ -33,10 +33,10 @@ Reader 与 Worker 使用同一个专用 Bot Token，但只有 Reader 接收 upda
 - `/notion recover <page-id>`：以最近待处理文章为基准核对未知写入的页面/批次标记；确认恢复后再点击保存继续。找不到已完成批次标记时仍保持 `unknown`，避免重复写入。
 - `/summary`、`/translate` 或文章按钮：只生成派生字段，不覆盖原始 Article。结果按所选操作显示为富文本，可导出 AI 结果。
 - `/settings llm on|off`、`/settings language zh-CN`：每用户独立开关和翻译语言。
-- `/settings model <模型>`：每用户模型设置，无需填写价格。
+- 设置页支持选择模型、输入自定义模型名和选择思考强度。也可用 `/settings model <模型>`，无需填写价格。
 - `/settings key <key|clear>`：使用 AES-GCM 保存个人 Key，尽力删除包含 Key 的 Telegram 消息。管理员需先配置 `NOTION_CREDENTIALS_KEY`；不配置个人 Key 时使用服务器默认 Key。
 - `/agent <目标>` 或无链接的自然语言消息：针对最近已解析文章生成最多 4 步计划；用户确认后串行执行注册动作。模型不能选择 URL/Notion ID，不能调用 Shell、任意 HTTP/SQL 或读取文件。
-- `/cancel`：取消正在运行的用户请求；没有运行请求时释放最近文章租约并使按钮过期。
+- `/cancel`：取消当前任务或模型输入，保留文章。移除文章需要在「更多操作」中点击并确认。
 
 Notion、LLM、授权/设置与工作流操作仅限白名单用户私聊。群组只允许白名单用户预览和导出文件；文章与确认按钮同时绑定用户和聊天。
 
@@ -82,3 +82,9 @@ taplo check pyproject.toml
 填写 `READER_ALLOWED_USER_IDS` 后运行 `docker compose -f deploy/compose.yaml up -d --build`；模型和平台 Cookie 按实际服务另行配置。
 
 详细交互流程、降级规则与验证边界见 [交互审查](docs/interaction-review-2026-10-03.md)。
+
+### 连续操作
+
+从「最近文章」打开旧文章后，后续摘要和翻译会作用于这篇文章。已有 AI 结果按模型、思考强度和语言匹配后直接显示，点击「重新生成」才重新调用；更改相关设置也会生成新结果。
+
+从文章开始保存到 Notion，遇到未授权或未选位置时，机器人保留这篇文章。授权网页和通知都有下一步按钮；选择位置后会继续展示原文章的保存确认，仍需用户确认才写入。

@@ -39,7 +39,7 @@ BOT_COMMANDS = [
     BotCommand("articles", "查看最近解析的文章"),
     BotCommand("platforms", "查看当前支持的平台"),
     BotCommand("translate", "翻译最近文章"),
-    BotCommand("cancel", "取消任务或清理最近文章"),
+    BotCommand("cancel", "取消当前任务或输入，保留文章"),
     BotCommand("settings", "查看个人设置"),
     BotCommand("summary", "摘要最近文章（需启用 AI）"),
     BotCommand("agent", "规划文章处理任务（需启用 AI）"),
@@ -119,7 +119,9 @@ class App:
         actions.append(("导出全文", "export"))
         if expanded and private_chat and self.settings.llm_enabled:
             actions.extend([("提取标签", "tags"), ("标题建议", "title"), ("整理排版", "normalize_markdown")])
-        if private_chat and (self.settings.llm_enabled or self.pending.derived(user_id, key)):
+        if expanded and private_chat:
+            actions.append(("移除这篇文章", "remove"))
+        if private_chat:
             actions.append(("收起" if expanded else "更多操作", "back" if expanded else "more"))
         return buttons([
             [(label, make_callback(key, action)) for label, action in actions[i:i + 2]]
@@ -139,14 +141,25 @@ class App:
             )
         else:
             ai = "已开启" if self.settings.llm_enabled and self.pending.preferences(user_id).get("llm") else "已关闭"
-            notion = "可连接" if self.oauth else "管理员尚未配置"
+            credential = self.secrets.credential(user_id) if self.secrets else None
+            targets = self.secrets.targets(user_id) if self.secrets and credential else []
+            chosen = next((t for t in targets if t.get("default")), None)
+            notion = ("已连接 · " + (chosen["title"] or "已选保存位置") if chosen else
+                      "已连接 · 待选择保存位置" if credential else "等待连接" if self.oauth else "管理员尚未配置")
             text = ("阅读助手\n\n发送一个文章或视频链接，开始解析。\n"
                     "结果中可直接阅读、查看媒体、生成摘要或导出全文。\n\n"
-                    f"AI：{ai} · Notion：{notion}\n"
+                    f"AI：{ai}\nNotion：{notion}\n"
                     f"文章与按钮有效期约 {self.settings.reader_pending_ttl // 60} 分钟。")
         if not private(message):
-            text += "\n\nAI、设置和 Notion 操作请私聊机器人。"
-        await reply(message, text, reply_markup=menu(user_id) if private(message) else None)
+            text = "阅读助手\n\n在群内发送链接即可解析和导出。\nAI、个人设置和 Notion 保存请私聊机器人。"
+        markup = menu(user_id)
+        latest = self.current_key(user_id, message.chat.id)
+        if latest and private(message):
+            _, current, _ = self.selected(user_id, message, latest)
+            markup.inline_keyboard.insert(0, [InlineKeyboardButton(
+                "继续阅读 · " + truncate(current.title or "最近文章", 28),
+                callback_data=make_callback(latest, "open"))])
+        await reply(message, text, reply_markup=markup if private(message) else None)
 
     async def articles(self, user_id: int, message: Any, offset: int = 0) -> None:
         entries = self.pending.recent(user_id, message.chat.id)
@@ -178,11 +191,22 @@ class App:
             reply_markup=buttons([[("确认执行", f"confirm:{key}"), ("取消", f"dismiss:{key}")]]),
         )
 
+    def current_key(self, user_id: int, chat_id: int) -> str | None:
+        selected = self.pending.preferences(user_id).get("selected_articles", {}).get(str(chat_id))
+        if selected and self.pending.get(user_id, chat_id, selected):
+            return str(selected)
+        return self.pending.latest(user_id, chat_id)
+
     def selected(self, user_id: int, message: Any, key: str | None = None) -> tuple[str, Article, tuple[str, ...]]:
-        key = key or self.pending.latest(user_id, message.chat.id)
+        key = key or self.current_key(user_id, message.chat.id)
         result = self.pending.get(user_id, message.chat.id, key) if key else None
         if not key or not result:
             raise ValueError("内容已过期，请重新解析。")
+        selections = self.pending.preferences(user_id).get("selected_articles", {})
+        if selections.get(str(message.chat.id)) != key:
+            selections.pop(str(message.chat.id), None)
+            selections[str(message.chat.id)] = key
+            self.pending.preferences(user_id, {"selected_articles": dict(list(selections.items())[-32:])})
         return key, result[0], result[1]
 
     async def read(self, user_id: int, message: Any, urls: list[str]) -> None:
@@ -195,7 +219,7 @@ class App:
             try:
                 await progress.update(f"正在解析 {index}/{len(urls)}\n{url}\n页面和媒体准备可能需要一些时间。")
                 if self.pending.count(user_id) >= self.settings.reader_max_pending_per_user:
-                    failures.append("待处理文章已达上限，请等待过期或使用 /cancel 清理最近文章。")
+                    failures.append("待处理文章已达上限。可在文章「更多操作」中移除旧文章，或等待其过期。")
                     break
                 async with self.capacity:
                     prepared = await self.worker.prepare(url)
@@ -203,6 +227,7 @@ class App:
                         f"正在整理 {index}/{len(urls)} · {prepared.article.title or '文章'}\n正文和媒体会合并展示。")
                     key = self.pending.put(user_id, message.chat.id, prepared.article,
                                            prepared.lease_ids, prepared.raw_result)
+                    self.selected(user_id, message, key)
                     await send_preview(message, prepared.article, self.worker,
                                        self.keyboard(key, user_id, private_chat=private(message)),
                                        self.settings.reader_pending_ttl // 60)
@@ -259,35 +284,47 @@ class App:
             timeout=self.settings.openai_timeout_seconds,
             max_input_chars=self.settings.llm_max_input_chars,
             max_output_tokens=self.settings.llm_max_output_tokens,
-            reasoning_effort=self.settings.llm_reasoning_effort,
+            reasoning_effort=prefs.get("reasoning_effort") or self.settings.llm_reasoning_effort,
             base_url=self.settings.openai_base_url,
         )
 
-    async def enhance(self, user_id: int, message: Any, key: str, operation: str, language: str | None = None) -> None:
+    async def show_ai(self, message: Any, key: str, operation: str, title: str, value: Any) -> None:
+        text = " · ".join(value) if isinstance(value, list) else str(value)
+        await message.reply_rich(ai_rich(title, text), reply_markup=buttons([
+            [("重新生成", make_callback(key, "regen_" + operation)), ("导出 AI 结果", make_callback(key, "ai_file"))],
+            [("查看原文", make_callback(key, "open"))],
+        ]))
+
+    async def enhance(self, user_id: int, message: Any, key: str, operation: str,
+                      language: str | None = None, *, regenerate: bool = False) -> None:
         _, article, _ = self.selected(user_id, message, key)
-        client = self.llm_client(user_id, sanitize(article))
         labels = {"summary": ("文章摘要", "summary"), "translate": ("全文翻译", "translated_markdown"),
                   "tags": ("文章标签", "tags"), "title": ("标题建议", "suggested_title"),
                   "normalize_markdown": ("整理后的文章", "normalized_markdown")}
         title, field = labels[operation]
+        prefs = self.pending.preferences(user_id)
+        target_language = language or prefs["language"]
+        signature = json.dumps([prefs.get("model") or self.settings.openai_model,
+                                prefs.get("reasoning_effort") or self.settings.llm_reasoning_effort,
+                                target_language, self.settings.openai_base_url])
+        cached = self.pending.cached_ai(user_id, key, field, signature)
+        if cached and not regenerate:
+            await self.show_ai(message, key, operation, title, cached)
+            return
+        client = self.llm_client(user_id, sanitize(article))
         progress = Progress(message, user_id)
         try:
             await progress.update(f"正在生成{title}…\n{article.title}\n复杂内容可能需要更长时间。")
-            result = await client.enhance(article, operation, user_id,
-                                          language or self.pending.preferences(user_id)["language"])
+            result = await client.enhance(article, operation, user_id, target_language)
             value = result.model_dump()[field]
-            text = " · ".join(value) if isinstance(value, list) else str(value)
-            if not text.strip():
+            if not value or (isinstance(value, str) and not value.strip()):
                 raise LLMError("llm_failed")
             self.selected(user_id, message, key)
-            self.pending.derived(user_id, key, {field: value})
-            await message.reply_rich(ai_rich(title, text), reply_markup=buttons([
-                [("导出 AI 结果", make_callback(key, "ai_file")), ("回到原文", make_callback(key, "open"))],
-            ]))
+            self.pending.save_ai(user_id, key, field, signature, value)
+            await self.show_ai(message, key, operation, title, value)
             await progress.clear()
         except asyncio.CancelledError:
             await progress.update("AI 任务已取消，原文保留。", done=True)
-            return
         except LLMError as error:
             await progress.update(MESSAGES.get(str(error), "AI 暂时未完成，原文保留，可稍后重试。"), done=True)
         except Exception:
@@ -324,7 +361,8 @@ class App:
         self.pending.clear_leases(key)
 
     async def request_save(self, user_id: int, message: Any, key: str) -> None:
-        self.selected(user_id, message, key)
+        _, article, _ = self.selected(user_id, message, key)
+        self.pending.preferences(user_id, {"notion_resume": {"key": key, "chat_id": message.chat.id}})
         if not self.notion:
             raise NotionError("authorization_required")
         if self.secrets and not self.secrets.credential(user_id):
@@ -336,7 +374,8 @@ class App:
             await self.notion_targets(user_id, message)
             return
         missing = await self.notion.schema(user_id, target["id"])
-        description = f"将当前文章保存到：{target['title'] or target['id']}"
+        self.pending.preferences(user_id, {"notion_resume": None})
+        description = f"确认保存到 Notion\n\n文章：{article.title or '无标题'}\n位置：{target['title'] or target['id']}"
         if missing:
             description += "\n同时添加缺少属性：" + "、".join(missing)
         await self.approval(
@@ -360,12 +399,12 @@ class App:
                 ]))
         elif command == "disconnect":
             self.secrets.disconnect(user_id)
+            self.pending.preferences(user_id, {"notion_resume": None})
             await reply(message, "已移除本地授权与目标；可在 Notion 中撤销 Integration 权限。")
         elif command == "targets":
             await self.notion_targets(user_id, message)
         elif command == "target" and len(args) == 2:
-            self.secrets.select(user_id, notion_id(args[1]))
-            await reply(message, "已选择目标。")
+            await self.select_notion_target(user_id, message, args[1])
         elif command == "recover" and len(args) == 2:
             key, _, _ = self.selected(user_id, message)
             target = self.notion.target(user_id)
@@ -387,6 +426,8 @@ class App:
         update: dict[str, Any] = {}
         if len(args) == 2 and args[0] == "llm" and args[1] in {"on", "off"}:
             update["llm"] = args[1] == "on"
+        elif len(args) == 2 and args[0] == "reasoning" and args[1] in {"low", "medium", "high"}:
+            update["reasoning_effort"] = args[1]
         elif len(args) == 2 and args[0] == "language" and re.fullmatch(r"[\w-]{1,40}", args[1]):
             update["language"] = args[1]
         elif len(args) == 2 and args[0] == "model":
@@ -412,13 +453,14 @@ class App:
             message,
             f"AI：{'开启' if self.settings.llm_enabled and prefs['llm'] else '关闭'}；语言：{prefs['language']}；"
             f"模型：{prefs['model'] or self.settings.openai_model}；"
-            f"思考强度：{self.settings.llm_reasoning_effort or '模型默认'}\n"
+            f"思考强度：{prefs.get('reasoning_effort') or self.settings.llm_reasoning_effort or '模型默认'}\n"
             "/settings llm on|off\n/settings language zh-CN\n/settings model <模型>\n"
             "默认无需个人 Key。修改模型：/settings model <模型名>",
             reply_markup=buttons([
                 [("关闭 AI" if prefs["llm"] else "开启 AI", f"ui:{user_id}:llm:" + ("off" if prefs["llm"] else "on"))],
                 [("翻译为中文", f"ui:{user_id}:language:zh-CN"), ("翻译为英文", f"ui:{user_id}:language:en")],
-                [("恢复默认模型", f"ui:{user_id}:default_model"), ("返回首页", f"ui:{user_id}:home")],
+                [("选择模型", f"ui:{user_id}:models"), ("思考强度", f"ui:{user_id}:reasoning")],
+                [("返回首页", f"ui:{user_id}:home")],
             ]),
         )
 
@@ -527,14 +569,12 @@ class App:
                 task.cancel()
                 await reply(message, "已请求取消。")
                 return
-            try:
-                key, _, leases = self.selected(user_id, message)
-                for lease in leases:
-                    await self.worker.release(lease)
-                self.pending.delete(key)
-            except ValueError:
-                pass
-            await reply(message, "已清理最近的待处理内容。")
+            pending_input = self.pending.preferences(user_id).get("input") or {}
+            if pending_input.get("chat_id") == message.chat.id:
+                self.pending.preferences(user_id, {"input": None})
+                await reply(message, "已取消输入，原来的设置和文章都已保留。", reply_markup=menu(user_id))
+            else:
+                await reply(message, "当前没有正在执行的任务，已有文章已保留。", reply_markup=menu(user_id))
             return
         lock = self.locks.setdefault(user_id, asyncio.Lock())
         if lock.locked():
@@ -546,7 +586,22 @@ class App:
                 self.active[user_id] = task
                 self.active_chat[user_id] = message.chat.id
             try:
-                if command in {"/start", "/help"}:
+                pending_input = self.pending.preferences(user_id).get("input") or {}
+                if (private(message) and pending_input.get("chat_id") == message.chat.id
+                        and pending_input.get("expires", 0) > time.time() and not command.startswith("/")
+                        and not message_urls(message)):
+                    model = text.strip()
+                    if not re.fullmatch(r"[\w.:-]{1,100}", model):
+                        await reply(message, "请输入模型名，例如 gpt-6.1-sol；要退出请发送 /cancel。")
+                        return
+                    self.pending.preferences(user_id, {"input": None})
+                    await self.settings_command(user_id, message, ["model", model])
+                    return
+                if pending_input and pending_input.get("chat_id") == message.chat.id:
+                    self.pending.preferences(user_id, {"input": None})
+                if command == "/start" and tokens[1:] == ["notion"] and private(message):
+                    await self.notion_targets(user_id, message)
+                elif command in {"/start", "/help"}:
                     await self.home(user_id, message, help_page=command == "/help")
                 elif command == "/articles":
                     await self.articles(user_id, message)
@@ -614,6 +669,19 @@ class App:
                     '暂无可保存的位置。\n请在 Notion 中把目标页面授权给此 Integration，再重新加载。',
                     reply_markup=buttons(rows))
 
+    async def select_notion_target(self, user_id: int, message: Any, target_id: str) -> None:
+        if not self.secrets:
+            raise NotionError("authorization_required")
+        self.secrets.select(user_id, notion_id(target_id))
+        resume = self.pending.preferences(user_id).get("notion_resume") or {}
+        if (resume.get("chat_id") == message.chat.id
+                and self.pending.get(user_id, message.chat.id, resume.get("key", ""))):
+            await self.request_save(user_id, message, resume["key"])
+            return
+        self.pending.preferences(user_id, {"notion_resume": None})
+        await reply(message, "保存位置已设置。\n现在发送一个链接，或从最近文章选择要保存的内容。",
+                    reply_markup=menu(user_id))
+
     async def menu_action(self, user_id: int, message: Any, data: str) -> None:
         parts = data.split(':')
         if len(parts) not in {3, 4} or parts[1] != str(user_id) or not private(message):
@@ -621,10 +689,38 @@ class App:
         action = parts[2]
         arg = parts[3] if len(parts) == 4 else ''
         panel = Panel(message)
+        if action not in {'model_input', 'input_cancel'}:
+            pending_input = self.pending.preferences(user_id).get('input') or {}
+            if pending_input.get('chat_id') == message.chat.id:
+                self.pending.preferences(user_id, {'input': None})
         if action in {'home', 'help'}:
             await self.home(user_id, panel, help_page=action == 'help')
         elif action == 'articles':
             await self.articles(user_id, panel, max(0, int(arg or 0)))
+        elif action == 'read':
+            await reply(panel, "把链接发到当前聊天即可。\n支持直接粘贴链接、转发带链接的文字，或发送带链接的图片说明。",
+                        reply_markup=buttons([[('支持的平台', f'ui:{user_id}:platforms'),
+                                               ('返回首页', f'ui:{user_id}:home')]]))
+        elif action == 'models':
+            await reply(panel, "选择模型\n默认模型适合阅读、摘要和翻译。也可以输入服务支持的其他模型名。",
+                        reply_markup=buttons([[('默认 · ' + self.settings.openai_model, f'ui:{user_id}:default_model')],
+                                              [('输入其他模型', f'ui:{user_id}:model_input')],
+                                              [('返回设置', f'ui:{user_id}:settings')]]))
+        elif action == 'model_input':
+            self.pending.preferences(user_id, {'input': {'chat_id': message.chat.id, 'expires': time.time() + 300}})
+            await reply(panel, "请直接发送模型名，例如 gpt-6.1-sol。\n五分钟内有效；发送链接会退出设置并开始解析。",
+                        reply_markup=buttons([[('取消输入', f'ui:{user_id}:input_cancel')]]))
+        elif action == 'input_cancel':
+            self.pending.preferences(user_id, {'input': None})
+            await self.settings_command(user_id, panel, [])
+        elif action == 'reasoning':
+            await reply(panel, "选择思考强度\n高：适合复杂文章\n中：平衡深度和等待时间\n低：适合简单任务",
+                        reply_markup=buttons([[('高', f'ui:{user_id}:effort:high'),
+                                               ('中', f'ui:{user_id}:effort:medium'),
+                                               ('低', f'ui:{user_id}:effort:low')],
+                                              [('返回设置', f'ui:{user_id}:settings')]]))
+        elif action == 'effort' and arg in {'low', 'medium', 'high'}:
+            await self.settings_command(user_id, panel, ['reasoning', arg])
         elif action == 'platforms':
             await self.platforms(user_id, panel)
         elif action == 'settings':
@@ -634,16 +730,14 @@ class App:
         elif action == 'language' and arg in {'zh-CN', 'en'}:
             await self.settings_command(user_id, panel, ['language', arg])
         elif action == 'default_model':
-            self.pending.preferences(user_id, {'model': ''})
+            self.pending.preferences(user_id, {'model': '', 'input': None})
             await self.settings_command(user_id, panel, [])
         elif action in {'notion', 'connect'}:
             await self.notion_command(user_id, panel, ['connect'] if action == 'connect' else [])
         elif action == 'targets':
             await self.notion_targets(user_id, panel, max(0, int(arg or 0)))
         elif action == 'target' and self.secrets:
-            self.secrets.select(user_id, notion_id(arg))
-            await reply(panel, '已选择保存位置。\n返回文章后点击「保存到 Notion」，核对并确认即可。',
-                        reply_markup=buttons([[('最近文章', f'ui:{user_id}:articles')]]))
+            await self.select_notion_target(user_id, panel, arg)
         else:
             raise ValueError('unknown_menu')
 
@@ -705,7 +799,17 @@ class App:
                         if missing != payload["add_schema"]:
                             raise NotionError("schema_confirmation_required")
                         await self.notion.schema(uid, payload["target"], add=True)
-                    if payload["kind"] == "save":
+                    if payload["kind"] == "remove":
+                        _, _, leases = self.selected(uid, message, payload["key"])
+                        for lease in leases:
+                            try:
+                                await self.worker.release(lease)
+                            except WorkerError:
+                                pass
+                        self.pending.delete(payload["key"])
+                        await message.edit_text("文章已从最近列表移除，不影响之前导出的文件或 Notion 页面。",
+                                                reply_markup=menu(uid))
+                    elif payload["kind"] == "save":
                         await self.save(uid, message, payload["key"], payload["target"])
                     elif payload["kind"] == "recover":
                         if not self.notion:
@@ -753,10 +857,14 @@ class App:
                     await message.reply_document(stream, file_name=stream.name)
                 elif action in {"markdown", "html"}:
                     await self.file(message, article, action)
+                elif action == "remove":
+                    await self.approval(message, uid, {"kind": "remove", "key": key},
+                                        "移除这篇文章？\n它将不再出现在最近列表中，之后可以重新发送链接解析。")
                 elif action == "save":
                     await self.request_save(uid, message, key)
                 else:
-                    await self.enhance(uid, message, key, action)
+                    await self.enhance(uid, message, key, action.removeprefix("regen_"),
+                                       regenerate=action.startswith("regen_"))
             except asyncio.CancelledError:
                 await reply(message, "任务已取消。")
             except PermissionError:
@@ -796,7 +904,9 @@ class App:
         if self.oauth:
 
             async def authorized(uid: int) -> None:
-                await self.bot.send_message(uid, "Notion 授权完成；请 /notion targets 选择目标。")
+                await self.bot.send_message(uid, "Notion 已连接。\n下一步选择保存位置；完成后可继续保存刚才的文章。",
+                                            reply_markup=buttons([[("选择保存位置", f"ui:{uid}:targets")],
+                                                                  [("返回首页", f"ui:{uid}:home")]]))
 
             self.oauth.notify = authorized
             self.oauth.routes(app)
@@ -826,6 +936,8 @@ class App:
             await web.TCPSite(runner, self.settings.reader_host, self.settings.reader_port).start()
             task = asyncio.create_task(self.maintain())
             await self.bot.start()
+            if self.oauth:
+                self.oauth.bot_username = self.bot.me.username or ""
             await self.bot.set_bot_commands(BOT_COMMANDS)
             await idle()
         finally:
