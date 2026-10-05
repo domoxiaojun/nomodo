@@ -11,7 +11,7 @@ from pydantic import SecretStr
 
 from simpread.config import Settings
 from simpread.domain import normalize_worker_result
-from simpread.integrations.notion import NotionStore
+from simpread.integrations.notion import NotionError, NotionStore
 from simpread.integrations.openai import ActionPlan, Executor
 from simpread.integrations.openai.schemas import Action
 from simpread.oauth.server import OAuthServer
@@ -209,8 +209,109 @@ def test_http_health_uses_reader_state(tmp_path: Path) -> None:
         async with TestClient(TestServer(app.http_app())) as client:
             assert (await client.get("/health")).status == 503
             app.bot = SimpleNamespace(is_initialized=True, is_connected=True)
+            assert (await client.get("/health")).status == 503
+            app.maintenance_task = asyncio.create_task(app.maintain())
             response = await client.get("/health")
-            assert await response.json() == {"service": "simpread", "ready": True}
+            assert await response.json() == {"service": "simpread", "ready": True, "maintenance": True}
+            app.maintenance_task.cancel()
+            await asyncio.gather(app.maintenance_task, return_exceptions=True)
+            assert (await client.get("/health")).status == 503
+        await app.close()
+
+    asyncio.run(run())
+
+
+def test_media_caption_is_parsed_and_list_preview_is_not_empty(tmp_path: Path) -> None:
+    async def run() -> None:
+        app = App(settings(tmp_path))
+        value = normalize_worker_result(
+            {"sourceUrl": "https://example.com", "platform": "x", "markdownContent": "- first\n- second"}
+        )
+        cast(Any, app.worker).prepare = AsyncMock(return_value=PreparedArticle(value, "job", (), {}))
+        msg = message()
+        msg.caption = "https://example.com"
+        await app.dispatch(None, msg)
+        cast(Any, app.worker).prepare.assert_awaited_once_with("https://example.com")
+        assert "first" in msg.reply_text.call_args.args[0]
+        await app.close()
+
+    asyncio.run(run())
+
+
+def test_cancel_cannot_interrupt_another_chat(tmp_path: Path) -> None:
+    async def run() -> None:
+        app = App(settings(tmp_path))
+        running = asyncio.create_task(asyncio.Event().wait())
+        app.active[1], app.active_chats[1] = running, 1
+        msg = message(text="/cancel", chat_id=-10, kind="group")
+        await app.dispatch(None, msg)
+        assert not running.cancelling()
+        assert "发起任务的聊天" in msg.reply_text.call_args.args[0]
+        await app.dispatch(None, message(text="/cancel"))
+        assert running.cancelling()
+        await asyncio.gather(running, return_exceptions=True)
+        await app.close()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("failure", [False, True])
+def test_notion_save_keeps_article_media_until_cancel(tmp_path: Path, failure: bool) -> None:
+    async def run() -> None:
+        app = App(settings(tmp_path))
+        value = normalize_worker_result({"sourceUrl": "https://example.com", "platform": "x", "content": "body"})
+        key = app.pending.put(1, 1, value, ("lease",), {})
+        cast(Any, app.worker).release = AsyncMock()
+        app.notion = cast(Any, SimpleNamespace(export_page=AsyncMock(
+            side_effect=NotionError("rate_limited") if failure else None,
+            return_value={"url": "https://notion.so/page", "warnings": []},
+        )))
+        if failure:
+            with pytest.raises(NotionError, match="rate_limited"):
+                await app.save(1, message(), key, "target")
+        else:
+            await app.save(1, message(), key, "target")
+        cast(Any, app.worker).release.assert_not_awaited()
+        stored = app.pending.get(1, 1, key)
+        assert stored and stored[1] == ("lease",)
+        await app.dispatch(None, message(text="/cancel"))
+        cast(Any, app.worker).release.assert_awaited_once_with("lease")
+        assert app.pending.get(1, 1, key) is None
+        await app.close()
+
+    asyncio.run(run())
+
+
+def test_maintenance_renews_busy_expired_article_then_releases_when_idle(tmp_path: Path) -> None:
+    async def run() -> None:
+        app = App(settings(tmp_path))
+        value = normalize_worker_result({"sourceUrl": "https://example.com", "platform": "x", "content": "body"})
+        key = app.pending.put(1, 1, value, ("lease",), {})
+        with app.pending.db:
+            app.pending.db.execute("UPDATE articles SET expires=0 WHERE id=?", (key,))
+        app.locks[1] = asyncio.Lock()
+        await app.locks[1].acquire()
+        observed = asyncio.Event()
+
+        async def observe(_: str) -> None:
+            observed.set()
+
+        cast(Any, app.worker).renew = AsyncMock(side_effect=observe)
+        cast(Any, app.worker).release = AsyncMock(side_effect=observe)
+        task = asyncio.create_task(app.maintain())
+        await asyncio.wait_for(observed.wait(), 1)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        assert app.pending.entries()
+        cast(Any, app.worker).release.assert_not_awaited()
+        app.locks[1].release()
+        observed.clear()
+        task = asyncio.create_task(app.maintain())
+        await asyncio.wait_for(observed.wait(), 1)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        assert not app.pending.entries()
+        cast(Any, app.worker).release.assert_awaited_once_with("lease")
         await app.close()
 
     asyncio.run(run())

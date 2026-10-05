@@ -7,6 +7,7 @@ from typing import Any
 from PIL import Image
 
 from simpread.domain import Article
+from simpread.domain.media import media_kind
 from simpread.domain.urls import safe_url
 from simpread.worker import WorkerClient, WorkerError
 
@@ -23,6 +24,12 @@ def validate(data: bytes, mime: str) -> None:
     elif mime in {"video/mp4", "video/quicktime", "video/webm"}:
         if not (data[4:8] == b"ftyp" or data.startswith(b"\x1aE\xdf\xa3")):
             raise ValueError("invalid_video")
+    elif mime == "application/pdf":
+        if not data.startswith(b"%PDF-"):
+            raise ValueError("invalid_document")
+    elif mime.startswith("audio/"):
+        if not data:
+            raise ValueError("invalid_audio")
     else:
         raise ValueError("unsupported_media")
 
@@ -32,16 +39,23 @@ async def upload_media(
 ) -> tuple[dict[str, Any], list[str]]:
     output, warnings = {}, []
     for asset in article.media:
-        parts = [(asset.media_id, asset.mime_type, asset.type in {"photo", "live_photo"})]
+        parts = [(asset.media_id, asset.mime_type, asset.size_bytes, media_kind(asset.type, asset.mime_type))]
         if asset.video_media_id:
-            parts.append((asset.video_media_id, asset.video_mime_type or "video/mp4", False))
-        for media_id, mime, image in parts:
-            kind = "image" if image else "video"
+            parts.append((asset.video_media_id, asset.video_mime_type or "video/mp4", asset.video_size_bytes, "video"))
+        for media_id, mime, size, kind in parts:
+            if media_id in output:
+                continue
             try:
                 if not asset.lease_id or not mime:
                     raise ValueError("media_unavailable")
+                if size > 20_000_000:
+                    raise WorkerError("media_too_large")
                 data = await worker.download_media(asset.lease_id, media_id, mime=mime)
-                await asyncio.to_thread(validate, data, mime)
+                if kind == "file" and mime != "application/pdf":
+                    if not data or asset.type != "document":
+                        raise ValueError("invalid_document")
+                else:
+                    await asyncio.to_thread(validate, data, mime)
                 # Bytes stay in bounded memory; no user-selected temp path is ever written.
                 upload_id = await client.upload(data, mime, f"{media_id}.{mime.split('/')[-1]}")
                 output[media_id] = {
@@ -53,7 +67,7 @@ async def upload_media(
                 if isinstance(error, NotionError) and error.code == "authorization_expired":
                     raise
                 warnings.append("media_failed")
-                if image and (url := safe_url(asset.source_url)):
+                if kind == "image" and (url := safe_url(asset.source_url)):
                     output[media_id] = {
                         "object": "block",
                         "type": "image",

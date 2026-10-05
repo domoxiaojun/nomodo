@@ -13,6 +13,8 @@ from typing import Any
 
 from simpread.domain import Article
 
+from .ai import AIStore
+
 
 class PendingStore:
     def __init__(self, path: Path, ttl: int = 1800) -> None:
@@ -30,8 +32,11 @@ class PendingStore:
                 id TEXT PRIMARY KEY, user_id INTEGER, chat_id INTEGER, payload TEXT, expires REAL);
             CREATE TABLE IF NOT EXISTS settings (user_id INTEGER PRIMARY KEY, payload TEXT);
             CREATE TABLE IF NOT EXISTS budgets (user_id INTEGER, day TEXT, reserved REAL, PRIMARY KEY(user_id,day));
+            CREATE TABLE IF NOT EXISTS selected_articles (
+                user_id INTEGER, chat_id INTEGER, article_id TEXT, PRIMARY KEY(user_id,chat_id));
         """)
         self.db.commit()
+        self.ai = AIStore(self.db)
 
     def close(self) -> None:
         self.db.close()
@@ -53,6 +58,7 @@ class PendingStore:
                     time.time(),
                 ),
             )
+            self.db.execute("INSERT OR REPLACE INTO selected_articles VALUES (?,?,?)", (user_id, chat_id, key))
         return key
 
     def get(self, user_id: int, chat_id: int, key: str) -> tuple[Article, tuple[str, ...]] | None:
@@ -69,6 +75,28 @@ class PendingStore:
         ).fetchone()
         return str(row[0]) if row else None
 
+    def current(self, user_id: int, chat_id: int) -> str | None:
+        row = self.db.execute(
+            "SELECT article_id FROM selected_articles WHERE user_id=? AND chat_id=?", (user_id, chat_id)
+        ).fetchone()
+        # An expired explicit selection must not silently operate on a different article.
+        return str(row[0]) if row else self.latest(user_id, chat_id)
+
+    def select(self, user_id: int, chat_id: int, key: str) -> None:
+        if self.get(user_id, chat_id, key) is None:
+            raise ValueError("article_unavailable")
+        with self.db:
+            self.db.execute("INSERT OR REPLACE INTO selected_articles VALUES (?,?,?)", (user_id, chat_id, key))
+
+    def articles(self, user_id: int, chat_id: int) -> list[tuple[str, str]]:
+        return [
+            (row[0], Article.model_validate_json(row[1]).title or "无标题")
+            for row in self.db.execute(
+                "SELECT id,article FROM articles WHERE user_id=? AND chat_id=? AND expires>? ORDER BY created DESC",
+                (user_id, chat_id, time.time()),
+            )
+        ]
+
     def entries(self) -> list[dict[str, Any]]:
         return [dict(r) for r in self.db.execute("SELECT id,user_id,chat_id,leases,expires FROM articles")]
 
@@ -83,9 +111,12 @@ class PendingStore:
         with self.db:
             self.db.execute("UPDATE articles SET leases='[]' WHERE id=?", (key,))
 
-    def delete(self, key: str) -> None:
+    def delete(self, key: str, *, forget_selection: bool = False) -> None:
         with self.db:
+            self.ai.delete(key)
             self.db.execute("DELETE FROM articles WHERE id=?", (key,))
+            if forget_selection:
+                self.db.execute("DELETE FROM selected_articles WHERE article_id=?", (key,))
 
     def derived(self, user_id: int, key: str, value: dict[str, Any] | None = None) -> dict[str, Any]:
         row = self.db.execute("SELECT derived FROM articles WHERE id=? AND user_id=?", (key, user_id)).fetchone()

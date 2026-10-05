@@ -55,8 +55,10 @@ class NotionClient:
                 await self.sleep(2**attempt)
                 continue
             status = response.status_code
-            if status in {401, 403}:
+            if status == 401:
                 raise NotionError("authorization_expired", status)
+            if status == 403:
+                raise NotionError("permission_denied", status)
             if status == 409:
                 raise NotionError("conflict", status)
             if status == 429:
@@ -85,6 +87,7 @@ class NotionClient:
     async def search(self) -> list[dict[str, Any]]:
         output = []
         cursor = None
+        seen: set[str] = set()
         while True:
             body = await self.request(
                 "POST",
@@ -92,10 +95,23 @@ class NotionClient:
                 read_only=True,
                 json={"page_size": 100, **({"start_cursor": cursor} if cursor else {})},
             )
-            output.extend(body.get("results", []))
-            if not body.get("has_more"):
+            results, cursor = self.page(body, seen)
+            output.extend(results)
+            if cursor is None:
                 return output
-            cursor = body["next_cursor"]
+
+    @staticmethod
+    def page(body: dict[str, Any], seen: set[str]) -> tuple[list[dict[str, Any]], str | None]:
+        results = body.get("results")
+        if not isinstance(results, list) or any(not isinstance(item, dict) for item in results):
+            raise NotionError("notion_invalid_response")
+        if not body.get("has_more"):
+            return results, None
+        cursor = body.get("next_cursor")
+        if not isinstance(cursor, str) or not cursor or cursor in seen:
+            raise NotionError("notion_invalid_response")
+        seen.add(cursor)
+        return results, cursor
 
     async def target(self, target_id: str, kind: str) -> dict[str, Any]:
         return await self.request("GET", f"{'pages' if kind == 'page' else 'data_sources'}/{notion_id(target_id)}")
@@ -103,16 +119,17 @@ class NotionClient:
     async def children(self, page_id: str) -> list[dict[str, Any]]:
         output = []
         cursor = None
+        seen: set[str] = set()
         while True:
             body = await self.request(
                 "GET",
                 f"blocks/{notion_id(page_id)}/children",
                 params={"page_size": 100, **({"start_cursor": cursor} if cursor else {})},
             )
-            output.extend(body.get("results", []))
-            if not body.get("has_more"):
+            results, cursor = self.page(body, seen)
+            output.extend(results)
+            if cursor is None:
                 return output
-            cursor = body["next_cursor"]
 
     async def create_page(
         self, parent: dict[str, Any], properties: dict[str, Any], children: list[dict[str, Any]]
@@ -121,8 +138,8 @@ class NotionClient:
             "POST", "pages", json={"parent": parent, "properties": properties, "children": children}
         )
 
-    async def append(self, page_id: str, children: list[dict[str, Any]]) -> None:
-        await self.request("PATCH", f"blocks/{notion_id(page_id)}/children", json={"children": children})
+    async def append(self, page_id: str, children: list[dict[str, Any]]) -> dict[str, Any]:
+        return await self.request("PATCH", f"blocks/{notion_id(page_id)}/children", json={"children": children})
 
     async def add_properties(self, target_id: str, properties: dict[str, Any]) -> None:
         await self.request("PATCH", f"data_sources/{notion_id(target_id)}", json={"properties": properties})

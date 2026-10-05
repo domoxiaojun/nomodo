@@ -14,6 +14,7 @@ from .blocks import article_blocks, batches, mapping, properties, text_blocks
 from .client import NotionClient, NotionError, notion_id
 from .media import upload_media
 from .store import NotionStore
+from .tree import nested, recover_tree, write_tree
 
 
 class NotionService:
@@ -62,8 +63,8 @@ class NotionService:
                     "default": old.get(target_id, {}).get("default", False),
                     "mapping": old.get(target_id, {}).get("mapping", {}),
                 }
-                self.store.save_target(user_id, value)
                 output.append(value)
+            self.store.replace_targets(user_id, output)
             return output
         except NotionError as error:
             if error.code == "authorization_expired":
@@ -107,10 +108,18 @@ class NotionService:
             try:
                 target = self.target(user_id, target_id)
                 job = self.store.export_status(user_id, article.content_hash, target_id)
+                snapshot = article.model_copy(deep=True)
+                for asset in snapshot.media:
+                    asset.lease_id = None
+                if job and "article" not in job:
+                    job.update(article=snapshot.model_dump(mode="json"), derived=derived or {})
+                    self.store.save_export(user_id, article.content_hash, target_id, job)
                 if job and job["status"] == "sent":
                     return job
                 if job and (job["status"] == "unknown" or job.get("in_flight")):
                     raise NotionError("write_outcome_unknown")
+                if job:
+                    derived = job.get("derived", derived or {})
                 info = await client.target(target_id, target["kind"])
                 props = properties(article, target, info, derived or {})
                 if not job:
@@ -124,6 +133,9 @@ class NotionService:
                         "marker": f"SimpRead export {marker}",
                         "blocks": [],
                         "warnings": [],
+                        "article": snapshot.model_dump(mode="json"),
+                        "derived": derived or {},
+                        "target_title": target.get("title", target_id),
                     }
                     self.store.save_export(user_id, article.content_hash, target_id, job)
                 if not job["blocks"]:
@@ -154,23 +166,28 @@ class NotionService:
                         page_id=notion_id(page["id"]), url=page.get("url", ""), in_flight=False, status="partial"
                     )
                     self.store.save_export(user_id, article.content_hash, target_id, job)
-                for index, batch in enumerate(batches(job["blocks"])):
-                    if index < job["next_batch"]:
-                        continue
-                    job["in_flight"] = True
-                    self.store.save_export(user_id, article.content_hash, target_id, job)
-                    for attempt in range(2):
-                        try:
-                            await client.append(
-                                job["page_id"], [*batch, *text_blocks(f"{job['marker']} batch {index}")]
-                            )
-                            break
-                        except NotionError as error:
-                            if error.code != "conflict" or attempt:
-                                raise
-                            await client.target(target_id, target["kind"])
-                    job.update(next_batch=index + 1, in_flight=False)
-                    self.store.save_export(user_id, article.content_hash, target_id, job)
+                if nested(job["blocks"]) or "tree_ops" in job:
+                    def save_tree() -> None:
+                        self.store.save_export(user_id, article.content_hash, target_id, job)
+                    await write_tree(job, client, save_tree)
+                else:
+                    for index, batch in enumerate(batches(job["blocks"])):
+                        if index < job["next_batch"]:
+                            continue
+                        job["in_flight"] = True
+                        self.store.save_export(user_id, article.content_hash, target_id, job)
+                        for attempt in range(2):
+                            try:
+                                await client.append(
+                                    job["page_id"], [*batch, *text_blocks(f"{job['marker']} batch {index}")]
+                                )
+                                break
+                            except NotionError as error:
+                                if error.code != "conflict" or attempt:
+                                    raise
+                                await client.target(target_id, target["kind"])
+                        job.update(next_batch=index + 1, in_flight=False)
+                        self.store.save_export(user_id, article.content_hash, target_id, job)
                 if not job["url"]:
                     job["url"] = (await client.target(job["page_id"], "page")).get("url", "")
                 if not str(job["url"]).startswith("https://"):
@@ -191,8 +208,16 @@ class NotionService:
                 raise
             finally:
                 await client.close()
-                for lease in set(leases) | {m.lease_id for m in article.media if m.lease_id}:
-                    await asyncio.shield(self.worker.release(lease))
+                # The pending Article owns leases, including across failed exports and retries.
+
+    def task(self, user_id: int, task_id: str) -> tuple[Article, dict[str, Any]]:
+        tasks = self.store.export_tasks(user_id, task_id)
+        if not tasks:
+            raise NotionError("export_task_not_found")
+        task = tasks[0]
+        if not task["job"].get("article"):
+            raise NotionError("legacy_export_snapshot_missing")
+        return Article.model_validate(task["job"]["article"]), task
 
     async def reconcile(self, user_id: int, article: Article, target_id: str, page_id: str) -> None:
         async with self.lock(user_id):
@@ -218,10 +243,13 @@ class NotionService:
                 }
                 if job["marker"] not in text:
                     raise NotionError("recovery_marker_missing")
-                if job["page_id"] and f"{job['marker']} batch {job['next_batch']}" not in text:
-                    raise NotionError("write_outcome_unknown")
-                while f"{job['marker']} batch {job['next_batch']}" in text:
-                    job["next_batch"] += 1
+                if "tree_ops" in job:
+                    await recover_tree(job, client)
+                else:
+                    if job["page_id"] and f"{job['marker']} batch {job['next_batch']}" not in text:
+                        raise NotionError("write_outcome_unknown")
+                    while f"{job['marker']} batch {job['next_batch']}" in text:
+                        job["next_batch"] += 1
                 job.update(page_id=page_id, url=info.get("url", ""), status="partial", in_flight=False)
                 self.store.save_export(user_id, article.content_hash, target_id, job)
             finally:

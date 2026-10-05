@@ -72,7 +72,7 @@ def test_long_export_resume_no_duplicate_and_isolation(tmp_path: Path) -> None:
         assert job["status"] == "sent"
         await service.export_page(1, article(), TARGET)
         assert sum(c.method == "POST" for c in calls) == 1
-        assert worker.released.count("l") == 2
+        assert worker.released == []  # Pending articles retain media for retry or another destination.
         assert store.export_status(2, article().content_hash, TARGET) is None
         store.close()
 
@@ -107,14 +107,14 @@ def test_unknown_write_is_not_replayed(tmp_path: Path, failure: str) -> None:
             await service.export_page(1, article(), TARGET, leases=("l",))
         with pytest.raises(NotionError, match="write_outcome_unknown"):
             await service.export_page(1, article(), TARGET)
-        assert writes == 1 and "l" in worker.released
+        assert writes == 1 and worker.released == []
         store.close()
 
     asyncio.run(run())
 
 
-@pytest.mark.parametrize("status", [401, 403])
-def test_invalid_auth_removed(tmp_path: Path, status: int) -> None:
+@pytest.mark.parametrize("status,code", [(401, "authorization_expired"), (403, "permission_denied")])
+def test_auth_expiry_is_distinct_from_resource_permissions(tmp_path: Path, status: int, code: str) -> None:
     async def run() -> None:
         def factory(token: str) -> NotionClient:
             return NotionClient(token, httpx.MockTransport(lambda req: httpx.Response(status, json={})))
@@ -122,9 +122,10 @@ def test_invalid_auth_removed(tmp_path: Path, status: int) -> None:
         store = NotionStore(tmp_path / "n.db", "x" * 32)
         store.put_credential(1, "secret")
         service = NotionService(store, Worker(), factory)  # type: ignore[arg-type]
-        with pytest.raises(NotionError, match="authorization_expired"):
+        with pytest.raises(NotionError, match=code):
             await service.targets(1)
-        assert store.credential(1) is None
+        assert (store.credential(1) is None) == (status == 401)
+        store.close()
 
     asyncio.run(run())
 

@@ -1,8 +1,9 @@
 """Explicit public allowlist: no Worker filesystem/credential metadata enters state."""
 
-from typing import Any
+from typing import Any, cast
 
 from .blocks import parse_html, parse_markdown
+from .media import media_kind
 from .models import Article, Block, MediaAsset, SourceInfo
 from .render import article_to_html, article_to_markdown
 from .urls import safe_url
@@ -35,12 +36,16 @@ MEDIA_FIELDS = {
     "videoMimeType",
     "videoSizeBytes",
     "sourceUrl",
+    "originalUrl",
 }
 
 
 def public_result(result: dict[str, Any]) -> dict[str, Any]:
     output = {k: v for k, v in result.items() if k in PUBLIC_FIELDS}
-    output["media"] = [{k: v for k, v in m.items() if k in MEDIA_FIELDS} for m in result.get("media", [])]
+    media = result.get("media", [])
+    if not isinstance(media, list) or any(not isinstance(item, dict) for item in media):
+        raise ValueError("invalid_media")
+    output["media"] = [{k: v for k, v in m.items() if k in MEDIA_FIELDS} for m in media]
     for media in output["media"]:
         if media.get("filename"):
             media["filename"] = str(media["filename"]).replace("\\", "/").split("/")[-1]
@@ -55,11 +60,18 @@ def normalize_worker_result(result: dict[str, Any]) -> Article:
     canonical = safe_url(result.get("canonicalUrl")) or source
     text = str(result.get("markdownContent") or result.get("plainContent") or result.get("content") or "")
     if result.get("markdownContent") or result.get("contentFormat") == "markdown":
-        blocks = parse_markdown(text)
-    elif not text and result.get("htmlContent"):
-        blocks = parse_html(result["htmlContent"])
+        blocks = parse_markdown(text, canonical)
+    elif result.get("htmlContent"):
+        blocks = parse_html(result["htmlContent"], canonical)
+    elif result.get("contentFormat") == "html":
+        blocks = parse_html(text, canonical)
     else:
         blocks = [Block(type="paragraph", text=t) for t in text.split("\n\n") if t.strip()]
+    def all_blocks(values: list[Block]):
+        for block in values:
+            yield block
+            yield from all_blocks(block.children)
+
     media = []
     for item in result["media"]:
         if not item.get("mediaId"):
@@ -82,16 +94,29 @@ def normalize_worker_result(result: dict[str, Any]) -> Article:
             }
         )
         media.append(asset)
-        blocks.append(
-            Block(
-                type="image" if asset.type in {"photo", "live_photo"} else "video",
-                media_id=asset.media_id,
-                url=asset.source_url,
-                text=asset.filename or "附件",
-            )
-        )
+        original = safe_url(item.get("originalUrl")) or asset.source_url
+        kind = media_kind(asset.type, asset.mime_type)
+        matches = [b for b in all_blocks(blocks)
+                   if original and b.url == original and not b.media_id
+                   and b.type in {"image", "video", "audio", "file"}]
+        if matches:
+            for block in matches:
+                block.media_id = asset.media_id
+        else:
+            blocks.append(Block(type=cast(Any, kind), media_id=asset.media_id,
+                                url=original, text=asset.filename or "附件"))
         if asset.video_media_id:
-            blocks.append(Block(type="video", media_id=asset.video_media_id))
+            motion = Block(type="video", media_id=asset.video_media_id)
+            # Attach motion next to its matching photo, including inside a nested block.
+            def insert_motion(values: list[Block], asset_id: str, motion: Block) -> bool:
+                for index, block in enumerate(values):
+                    if block.media_id == asset_id:
+                        values.insert(index + 1, motion)
+                        return True
+                    if insert_motion(block.children, asset_id, motion):
+                        return True
+                return False
+            insert_motion(blocks, asset.media_id, motion)
     identity = {
         "source": canonical,
         "title": result.get("title"),

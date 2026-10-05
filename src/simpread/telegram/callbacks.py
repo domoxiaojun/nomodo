@@ -1,6 +1,7 @@
 import re
 
 from simpread.domain import Article
+from simpread.domain.render import markdown_block
 
 ACTIONS = {"save", "summary", "title", "tags", "translate", "normalize_markdown", "markdown", "html"}
 
@@ -28,8 +29,33 @@ def truncate(text: str, limit: int) -> str:
     return text.encode("utf-16-le")[: (limit - 1) * 2].decode("utf-16-le", errors="ignore") + "…"
 
 
+def message_chunks(text: str, limit: int = 3800) -> list[str]:
+    """Lossless chunks bounded in Telegram UTF-16 units, including astral emoji."""
+    if limit < 2:
+        raise ValueError("message_limit_too_small")
+    chunks: list[str] = []
+    current: list[str] = []
+    size = 0
+    break_at = 0
+    for char in text:
+        width = 2 if ord(char) > 0xFFFF else 1
+        while size + width > limit:
+            cut = break_at or len(current)
+            chunks.append("".join(current[:cut]))
+            current = current[cut:]
+            size = sum(2 if ord(c) > 0xFFFF else 1 for c in current)
+            break_at = 0
+        current.append(char)
+        size += width
+        if char == "\n":
+            break_at = len(current)
+    if current:
+        chunks.append("".join(current))
+    return chunks
+
+
 def preview(article: Article) -> str:
-    body = "\n\n".join(b.text for b in article.blocks if b.text)
+    body = "\n\n".join(markdown_block(b) for b in article.blocks if b.text or b.items or b.rows or b.children)
     return (
         f"{truncate(article.title or '无标题', 250)}\n平台：{article.source.platform}\n"
         + f"来源：{article.source.original_url}\n\n{truncate(body, 1300)}"

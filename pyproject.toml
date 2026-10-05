@@ -17,6 +17,7 @@ dependencies = [
     "pydantic-settings>=2.11.0",
     "python-dotenv>=1.0.1",
     "tgcrypto>=1.2.5",
+    "tiktoken>=0.12,<1",
 ]
 [dependency-groups]
 dev = [

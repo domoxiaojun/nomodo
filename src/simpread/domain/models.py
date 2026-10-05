@@ -14,6 +14,16 @@ class SourceInfo(BaseModel):
     platform: str
 
 
+class Inline(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    text: str
+    bold: bool = False
+    italic: bool = False
+    code: bool = False
+    strike: bool = False
+    url: str | None = None
+
+
 class Block(BaseModel):
     model_config = ConfigDict(extra="forbid")
     type: Literal[
@@ -28,6 +38,10 @@ class Block(BaseModel):
         "video",
         "divider",
         "link",
+        "list_item",
+        "animation",
+        "audio",
+        "file",
     ]
     text: str = ""
     level: int | None = Field(default=None, ge=1, le=6)
@@ -37,6 +51,11 @@ class Block(BaseModel):
     url: str | None = None
     alt: str | None = None
     media_id: str | None = None
+    inlines: list[Inline] = Field(default_factory=list)
+    children: list[Block] = Field(default_factory=list)
+    start: int = 1
+    cells: list[list[list[Inline]]] = Field(default_factory=list)
+    header: bool = True
 
 
 class MediaAsset(BaseModel):
@@ -58,6 +77,7 @@ class MediaAsset(BaseModel):
 
 class Article(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    schema_version: int = 2
     source: SourceInfo
     title: str = ""
     description: str = ""

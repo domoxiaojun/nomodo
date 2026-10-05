@@ -161,3 +161,79 @@ def test_protocol_mismatch_and_media_limits() -> None:
         await worker.close()
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    "malformed", [{"status": "ready", "results": None}, {"status": "ready", "results": [None]}, []]
+)
+def test_malformed_poll_keeps_job_identity_for_cleanup(malformed: Any) -> None:
+    calls = []
+
+    async def handler(req: httpx.Request) -> httpx.Response:
+        calls.append((req.method, req.url.path))
+        if req.url.path.endswith("capabilities"):
+            return httpx.Response(
+                200, json={"protocolVersion": 3, "version": "2.2.4", "platforms": [{"id": "youtube"}]}
+            )
+        if req.method == "POST":
+            return httpx.Response(202, json={"id": "job", "status": "queued"})
+        if req.method == "GET":
+            return httpx.Response(200, json=malformed)
+        return httpx.Response(200, json={})
+
+    async def run() -> None:
+        worker = WorkerClient("http://worker", "secret", "123", transport=httpx.MockTransport(handler), poll_interval=0)
+        try:
+            with pytest.raises(WorkerError, match="worker_contract_error"):
+                await worker.prepare(URL)
+        finally:
+            await worker.close()
+
+    asyncio.run(run())
+    assert ("DELETE", "/api/v1/jobs/job") in calls
+
+
+@pytest.mark.parametrize("media", [None, ["bad"]])
+def test_invalid_media_keeps_contract_error_and_releases_lease(media: Any) -> None:
+    calls = []
+
+    async def handler(req: httpx.Request) -> httpx.Response:
+        calls.append((req.method, req.url.path))
+        if req.url.path.endswith("capabilities"):
+            return httpx.Response(
+                200, json={"protocolVersion": 3, "version": "2.2.4", "platforms": [{"id": "youtube"}]}
+            )
+        if req.method == "POST":
+            return httpx.Response(200, json={"id": "job", "status": "ready", "results": [{**result(), "media": media}]})
+        return httpx.Response(200, json={})
+
+    async def run() -> None:
+        worker = WorkerClient("http://worker", "secret", "123", transport=httpx.MockTransport(handler))
+        try:
+            with pytest.raises(WorkerError, match="worker_contract_error"):
+                await worker.prepare(URL)
+        finally:
+            await worker.close()
+
+    asyncio.run(run())
+    assert ("DELETE", "/api/v1/leases/lease") in calls
+
+
+def test_html_structure_and_embedded_links_survive_plain_fallback() -> None:
+    value = normalize_worker_result(
+        {
+            "sourceUrl": URL,
+            "platform": "youtube",
+            "plainContent": "heading item cell",
+            "htmlContent": '<h2>heading</h2><ul><li>item <a href="https://example.com/list">link</a></li></ul>'
+            '<table><tr><td>cell<img src="https://example.com/a.png"></td></tr></table>',
+        }
+    )
+    assert {b.type for b in value.blocks} >= {"heading", "unordered_list", "table", "image"}
+    nested = next(b for b in value.blocks if b.type == "unordered_list")
+    assert nested.children[0].children[0].inlines[-1].url == "https://example.com/list"
+    assert "https://example.com/list" in value.markdown and "<table>" in value.html
+    alternate = normalize_worker_result(
+        {"sourceUrl": URL, "platform": "youtube", "contentFormat": "html", "content": "<h2>heading</h2>"}
+    )
+    assert alternate.blocks[0].type == "heading"

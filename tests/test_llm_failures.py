@@ -1,4 +1,5 @@
 import asyncio
+import json
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock
@@ -31,13 +32,12 @@ def test_reasoning_environment_reaches_client(tmp_path: Path, monkeypatch: pytes
             openai_model="fixture",
             llm_input_usd_per_million=1,
             llm_output_usd_per_million=1,
+            llm_reasoning_efforts=value,
         ))
         app.pending.preferences(1, {"llm": True})
-        client = app.llm_client(1, "body")
         try:
-            assert client.reasoning_effort == (value or None)
+            assert app.reader.profile(1)[0]["reasoning_effort"] == (value or None)
         finally:
-            await client.close()
             await app.close()
 
     asyncio.run(run())
@@ -63,7 +63,8 @@ def test_llm_failures_are_safe_and_leave_original_unchanged(mode: str) -> None:
         )
         original = article.model_dump_json()
         client = ResponsesClient("key", "model", "identity", transport=httpx.MockTransport(handler))
-        with pytest.raises(LLMError, match="llm_failed") as error:
+        expected = {"timeout": "llm_timeout", "rate_limit": "llm_rate_limited", "invalid": "invalid_output"}[mode]
+        with pytest.raises(LLMError, match=expected) as error:
             await client.enhance(article, "summary", 1)
         assert "secret" not in str(error.value) and article.model_dump_json() == original
         await client.close()
@@ -86,6 +87,25 @@ def test_sanitized_input_excludes_worker_and_secret_fields() -> None:
     )
     prompt = sanitize(article)
     assert all(s not in prompt for s in ["abc-secret", "/Users/test", "secret-lease", "media-secret", "nativeError"])
+    data = json.loads(prompt)
+    assert "hello" in data["blocks"][0]["text"]
+
+
+def test_redaction_preserves_other_fields_and_structured_content() -> None:
+    article = normalize_worker_result(
+        {
+            "sourceUrl": "https://example.com",
+            "platform": "x",
+            "title": "token=hidden-value",
+            "description": "keep description",
+            "markdownContent": "- api_key=private-value\n- keep item\n\n|name|value|\n|---|---|\n|row|keep cell|",
+        }
+    )
+    prompt = sanitize(article)
+    data = json.loads(prompt)
+    assert data["title"] == "[redacted]" and data["description"] == "keep description"
+    assert "keep item" in prompt and "keep cell" in prompt and "private-value" not in prompt
+    assert "token=hidden-value" == article.title
 
 
 def test_budget_or_disabled_stops_before_network(tmp_path: Path) -> None:
@@ -104,10 +124,12 @@ def test_budget_or_disabled_stops_before_network(tmp_path: Path) -> None:
             )
         )
         with pytest.raises(LLMError, match="llm_disabled"):
-            app.llm_client(1, "body")
+            app.reader.profile(1)
         app.pending.preferences(1, {"llm": True})
+        article = normalize_worker_result({"sourceUrl": "https://example.com", "content": "body"})
+        key = app.pending.put(1, 1, article, (), {})
         with pytest.raises(LLMError, match="budget_exhausted"):
-            app.llm_client(1, "body")
+            await app.reader.run(1, 1, key, "summary")
         assert app.pending.preferences(2)["llm"] is False
         await app.close()
 

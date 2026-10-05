@@ -33,6 +33,9 @@ class NotionStore:
                 user_id INTEGER,target_id TEXT,payload TEXT,PRIMARY KEY(user_id,target_id));
             CREATE TABLE IF NOT EXISTS exports_v1 (user_id INTEGER,article_hash TEXT,target_id TEXT,payload TEXT,
                                                   PRIMARY KEY(user_id,article_hash,target_id));
+            CREATE TABLE IF NOT EXISTS export_refs_v1 (
+                task_id TEXT PRIMARY KEY,user_id INTEGER,article_hash TEXT,target_id TEXT,
+                UNIQUE(user_id,article_hash,target_id));
             CREATE TABLE IF NOT EXISTS oauth_v1 (
                 state TEXT PRIMARY KEY,user_id INTEGER,browser TEXT,verifier TEXT,expires REAL);
         """)
@@ -41,7 +44,7 @@ class NotionStore:
             value = json.loads(payload)
             if value.get("in_flight"):
                 value["status"] = "unknown"
-                self.save_export(uid, digest, target, value)
+            self.save_export(uid, digest, target, value)
 
     def close(self) -> None:
         self.db.close()
@@ -84,6 +87,14 @@ class NotionStore:
                 "INSERT OR REPLACE INTO targets_v1 VALUES (?,?,?)", (user_id, target["id"], json.dumps(target))
             )
 
+    def replace_targets(self, user_id: int, targets: list[dict[str, Any]]) -> None:
+        with self.db:
+            self.db.execute("DELETE FROM targets_v1 WHERE user_id=?", (user_id,))
+            self.db.executemany(
+                "INSERT INTO targets_v1 VALUES (?,?,?)",
+                [(user_id, target["id"], json.dumps(target)) for target in targets],
+            )
+
     def select(self, user_id: int, target_id: str) -> None:
         targets = self.targets(user_id)
         if not any(t["id"] == target_id for t in targets):
@@ -101,10 +112,26 @@ class NotionStore:
 
     def save_export(self, user_id: int, article_hash: str, target_id: str, value: dict[str, Any]) -> None:
         with self.db:
+            task_id = hashlib.sha256(f"{user_id}:{article_hash}:{target_id}".encode()).hexdigest()[:24]
+            self.db.execute(
+                "INSERT OR IGNORE INTO export_refs_v1 VALUES (?,?,?,?)", (task_id, user_id, article_hash, target_id)
+            )
             self.db.execute(
                 "INSERT OR REPLACE INTO exports_v1 VALUES (?,?,?,?)",
                 (user_id, article_hash, target_id, json.dumps(value)),
             )
+
+    def export_tasks(self, user_id: int, task_id: str | None = None) -> list[dict[str, Any]]:
+        rows = self.db.execute(
+            "SELECT r.task_id,e.article_hash,e.target_id,e.payload FROM exports_v1 e "
+            "JOIN export_refs_v1 r ON e.user_id=r.user_id AND e.article_hash=r.article_hash "
+            "AND e.target_id=r.target_id "
+            "WHERE e.user_id=?" + (" AND r.task_id=?" if task_id is not None else "") + " ORDER BY e.rowid DESC",
+            (user_id, task_id) if task_id is not None else (user_id,),
+        )
+        return [
+            {"id": row[0], "article_hash": row[1], "target": row[2], "job": json.loads(row[3])} for row in rows
+        ]
 
     def oauth_begin(self, user_id: int, pkce: bool = False, ttl: int = 600) -> str:
         state = secrets.token_urlsafe(32)
