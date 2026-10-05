@@ -32,11 +32,11 @@ def test_reasoning_environment_reaches_client(tmp_path: Path, monkeypatch: pytes
             openai_model="fixture",
             llm_input_usd_per_million=1,
             llm_output_usd_per_million=1,
-            llm_reasoning_efforts=value,
+            llm_reasoning_efforts=value or "low,medium,high",
         ))
         app.pending.preferences(1, {"llm": True})
         try:
-            assert app.reader.profile(1)[0]["reasoning_effort"] == (value or None)
+            assert app.reader.profile(1)[0]["reasoning_effort"] == (value or "high")
         finally:
             await app.close()
 
@@ -108,36 +108,48 @@ def test_redaction_preserves_other_fields_and_structured_content() -> None:
     assert "token=hidden-value" == article.title
 
 
-def test_budget_or_disabled_stops_before_network(tmp_path: Path) -> None:
-    from pydantic import SecretStr
-
+def test_llm_defaults_budget_and_user_opt_out(tmp_path: Path) -> None:
     async def run() -> None:
-        app = App(
-            settings(
-                tmp_path,
-                llm_enabled=True,
-                openai_api_key=SecretStr("fixture"),
-                openai_model="fixture",
-                llm_daily_budget=0,
-                llm_input_usd_per_million=1,
-                llm_output_usd_per_million=1,
-            )
-        )
-        with pytest.raises(LLMError, match="llm_disabled"):
-            app.reader.profile(1)
-        app.pending.preferences(1, {"llm": True})
-        article = normalize_worker_result({"sourceUrl": "https://example.com", "content": "body"})
-        key = app.pending.put(1, 1, article, (), {})
-        with pytest.raises(LLMError, match="budget_exhausted"):
-            await app.reader.run(1, 1, key, "summary")
-        assert app.pending.preferences(2)["llm"] is False
-        await app.close()
+        app = App(settings(tmp_path, llm_enabled=True, openai_api_key=SecretStr("fixture")))
+        try:
+            client = app.llm_client(1, "body")
+            assert client.model == "gpt-6.1-sol"
+            assert client.reasoning_effort == "high"
+            await client.close()
+            app.pending.preferences(1, {"llm": False})
+            with pytest.raises(LLMError, match="llm_disabled"):
+                app.llm_client(1, "body")
+            assert app.pending.preferences(2)["llm"] is True
+            await app.settings_command(2, message(uid=2), ["model", "gpt-6.1-sol"])
+            assert app.pending.preferences(2)["model"] == "gpt-6.1-sol"
+        finally:
+            await app.close()
+        priced = App(settings(
+            tmp_path,
+            llm_enabled=True,
+            openai_api_key=SecretStr("fixture"),
+            openai_model="fixture",
+            llm_daily_budget=0,
+            llm_input_usd_per_million=1,
+            llm_output_usd_per_million=1,
+            llm_reasoning_efforts="high",
+        ))
+        try:
+            priced.pending.preferences(1, {"llm": True})
+            article = normalize_worker_result({"sourceUrl": "https://example.com", "content": "body"})
+            key = priced.pending.put(1, 1, article, (), {})
+            with pytest.raises(LLMError, match="budget_exhausted"):
+                await priced.reader.run(1, 1, key, "summary")
+        finally:
+            await priced.close()
 
     asyncio.run(run())
 
 
 def test_failed_media_send_releases_pending_lease(tmp_path: Path) -> None:
     from typing import cast
+
+    from pyrogram.errors import BadRequest
 
     from simpread.worker import PreparedArticle
 
@@ -150,9 +162,8 @@ def test_failed_media_send_releases_pending_lease(tmp_path: Path) -> None:
         worker.prepare = AsyncMock(return_value=PreparedArticle(article, "job", ("l",), {}))
         worker.release = AsyncMock()
         msg = message(text="https://example.com")
-        msg.reply_text = AsyncMock(side_effect=RuntimeError("fixture"))
-        with pytest.raises(RuntimeError):
-            await app.read(1, msg, ["https://example.com"])
+        msg.reply_rich = AsyncMock(side_effect=BadRequest())
+        await app.read(1, msg, ["https://example.com"])
         worker.release.assert_awaited_once_with("l")
         assert app.pending.count(1) == 0
         await app.close()

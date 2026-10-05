@@ -3,7 +3,12 @@ import re
 from simpread.domain import Article
 from simpread.domain.render import markdown_block
 
-ACTIONS = {"save", "summary", "title", "tags", "translate", "normalize_markdown", "markdown", "html"}
+ACTIONS = {
+    "save", "summary", "title", "tags", "translate", "normalize_markdown",
+    "markdown", "html", "open", "more", "back", "export", "ai_file", "remove", "refresh",
+    "regen_summary", "regen_translate", "regen_tags",
+    "regen_title", "regen_normalize_markdown",
+}
 
 
 def make_callback(article_id: str, action: str) -> str:

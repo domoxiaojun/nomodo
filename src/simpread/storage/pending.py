@@ -1,4 +1,4 @@
-"""Owner/chat scoped durable articles, approvals, settings and daily budget reservations."""
+"""Owner/chat scoped durable articles, approvals, settings and optional budgets."""
 
 from __future__ import annotations
 
@@ -34,6 +34,9 @@ class PendingStore:
             CREATE TABLE IF NOT EXISTS budgets (user_id INTEGER, day TEXT, reserved REAL, PRIMARY KEY(user_id,day));
             CREATE TABLE IF NOT EXISTS selected_articles (
                 user_id INTEGER, chat_id INTEGER, article_id TEXT, PRIMARY KEY(user_id,chat_id));
+            CREATE TABLE IF NOT EXISTS ai_results (
+                user_id INTEGER, article_id TEXT, field TEXT, signature TEXT, value TEXT,
+                PRIMARY KEY(user_id, article_id, field));
         """)
         self.db.commit()
         self.ai = AIStore(self.db)
@@ -97,6 +100,32 @@ class PendingStore:
             )
         ]
 
+    def recent(self, user_id: int, chat_id: int) -> list[dict[str, Any]]:
+        rows = self.db.execute(
+            "SELECT id,article,expires FROM articles WHERE user_id=? AND chat_id=? AND expires>? ORDER BY created DESC",
+            (user_id, chat_id, time.time()),
+        )
+        return [
+            {"id": row["id"], "title": json.loads(row["article"]).get("title", ""), "expires": row["expires"]}
+            for row in rows
+        ]
+
+    def find_url(self, user_id: int, chat_id: int, url: str) -> str | None:
+        rows = self.db.execute(
+            "SELECT id,article FROM articles WHERE user_id=? AND chat_id=? AND expires>? ORDER BY created DESC",
+            (user_id, chat_id, time.time()),
+        )
+        return next(
+            (str(row["id"]) for row in rows if json.loads(row["article"])["source"]["original_url"] == url),
+            None,
+        )
+
+    def minutes_left(self, user_id: int, chat_id: int, key: str) -> int:
+        row = self.db.execute(
+            "SELECT expires FROM articles WHERE id=? AND user_id=? AND chat_id=?", (key, user_id, chat_id)
+        ).fetchone()
+        return max(1, int((row[0] - time.time()) / 60)) if row else 0
+
     def entries(self) -> list[dict[str, Any]]:
         return [dict(r) for r in self.db.execute("SELECT id,user_id,chat_id,leases,expires FROM articles")]
 
@@ -115,8 +144,31 @@ class PendingStore:
         with self.db:
             self.ai.delete(key)
             self.db.execute("DELETE FROM articles WHERE id=?", (key,))
+            self.db.execute("DELETE FROM ai_results WHERE article_id=?", (key,))
             if forget_selection:
                 self.db.execute("DELETE FROM selected_articles WHERE article_id=?", (key,))
+
+    def cached_ai(self, user_id: int, key: str, field: str, signature: str) -> Any:
+        row = self.db.execute(
+            "SELECT value FROM ai_results WHERE user_id=? AND article_id=? AND field=? AND signature=?",
+            (user_id, key, field, signature),
+        ).fetchone()
+        return json.loads(row[0]) if row else None
+
+    def save_ai(self, user_id: int, key: str, field: str, signature: str, value: Any) -> None:
+        with self.db:
+            row = self.db.execute("SELECT derived FROM articles WHERE id=? AND user_id=?", (key, user_id)).fetchone()
+            if not row:
+                raise ValueError("article_expired")
+            derived = json.loads(row[0])
+            derived[field] = value
+            self.db.execute(
+                "UPDATE articles SET derived=? WHERE id=? AND user_id=?", (json.dumps(derived), key, user_id)
+            )
+            self.db.execute(
+                "INSERT OR REPLACE INTO ai_results VALUES (?,?,?,?,?)",
+                (user_id, key, field, signature, json.dumps(value)),
+            )
 
     def derived(self, user_id: int, key: str, value: dict[str, Any] | None = None) -> dict[str, Any]:
         row = self.db.execute("SELECT derived FROM articles WHERE id=? AND user_id=?", (key, user_id)).fetchone()
@@ -149,7 +201,9 @@ class PendingStore:
 
     def preferences(self, user_id: int, update: dict[str, Any] | None = None) -> dict[str, Any]:
         row = self.db.execute("SELECT payload FROM settings WHERE user_id=?", (user_id,)).fetchone()
-        output = dict(json.loads(row[0])) if row else {"llm": False, "language": "zh-CN", "model": ""}
+        output = {"llm": True, "language": "zh-CN", "model": ""}
+        if row:
+            output.update(json.loads(row[0]))
         if update:
             output.update(update)
             with self.db:

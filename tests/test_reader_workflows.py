@@ -91,8 +91,9 @@ def test_reply_read_and_multilink_progress(tmp_path: Path) -> None:
         msg = message(text="/read")
         msg.reply_to_message = message(text="https://example.com/a https://example.com/b")
         await app.dispatch(None, msg)
-        output = "\n".join(c.args[0] for c in msg.reply_text.call_args_list)
-        assert "第 1/2" in output and "第 2/2" in output and "成功 2 / 2" in output
+        assert "第 1/2" in msg.reply_text.call_args.args[0]
+        assert "第 2/2" in msg.reply_text.return_value.edit_text.call_args.args[0]
+        assert msg.reply_rich.await_count == 2
         await app.close()
 
     asyncio.run(run())

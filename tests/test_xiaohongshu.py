@@ -13,7 +13,8 @@ from simpread.domain import normalize_worker_result
 from simpread.integrations.notion.blocks import article_blocks
 from simpread.telegram.app import MESSAGES
 from simpread.telegram.input import message_urls
-from simpread.telegram.media import send_preview
+from simpread.telegram.media import DeliveryUncertain, prepare_media, send_preview
+from simpread.telegram.ui import buttons
 from simpread.worker import WorkerClient, WorkerError, extract_urls
 
 NOTE = "https://www.xiaohongshu.com/explore/0123456789abcdef01234567"
@@ -106,38 +107,43 @@ def test_note_newlines_tags_and_complete_live_photo_order_in_exports() -> None:
     assert notion[0]["paragraph"]["rich_text"][0]["text"]["content"] == value["plainContent"]
 
 
-@pytest.mark.parametrize("fail_download,fail_album", [(False, False), (True, False), (False, True)])
-def test_preview_all_images_in_order_and_no_blind_replay(fail_download: bool, fail_album: bool) -> None:
+@pytest.mark.parametrize("fail_download", [False, True])
+def test_preview_keeps_live_photo_order_inside_one_rich_message(fail_download: bool) -> None:
     async def run() -> None:
-        sent: list[list[bytes]] = []
+        downloaded: list[str] = []
         worker = AsyncMock()
 
         async def download(_: str, mid: str, **kwargs: Any) -> bytes:
+            downloaded.append(mid)
             if fail_download and mid == "p5":
                 raise WorkerError("media_unavailable")
             return mid.encode()
 
         worker.download_media.side_effect = download
-        msg = message()
-
-        async def group(items: list[Any]) -> None:
-            sent.append([item.media.getvalue() for item in items])
-            if fail_album and len(sent) == 1:
-                raise TimeoutError("delivery unknown")
-
-        msg.reply_media_group = AsyncMock(side_effect=group)
         value = payload(23)
         value["media"][3].update(type="live_photo", videoMediaId="motion", videoMimeType="video/mp4")
-        failed = await send_preview(msg, normalize_worker_result(value), cast(Any, worker))
-        expected = [b"p0", b"p1", b"p2", b"p3", b"motion", *[f"p{i}".encode() for i in range(4, 23)]]
-        if fail_download:
-            expected.remove(b"p5")
-        assert [item for batch in sent for item in batch] == expected
-        assert all(2 <= len(batch) <= 10 for batch in sent)
-        assert worker.download_media.await_count == 24
-        assert failed == (10 if fail_album else 1 if fail_download else 0)
+        article = normalize_worker_result(value)
+        blocks, warnings = await prepare_media(article, cast(Any, worker))
+        assert downloaded[:6] == ["p0", "p1", "p2", "p3", "motion", "p4"]
+        assert len(downloaded) == 20 and warnings and len(blocks) == (19 if fail_download else 20)
+        msg = message()
+        await send_preview(msg, article, cast(Any, worker), buttons([]))
+        msg.reply_rich.assert_awaited_once()
         msg.reply_photo.assert_not_awaited()
         msg.reply_video.assert_not_awaited()
+
+    asyncio.run(run())
+
+
+def test_uncertain_rich_send_is_not_retried() -> None:
+    async def run() -> None:
+        worker = AsyncMock()
+        worker.download_media = AsyncMock(return_value=b"p")
+        msg = message()
+        msg.reply_rich.side_effect = TimeoutError("delivery unknown")
+        with pytest.raises(DeliveryUncertain):
+            await send_preview(msg, normalize_worker_result(payload()), cast(Any, worker), buttons([]))
+        msg.reply_rich.assert_awaited_once()
 
     asyncio.run(run())
 
@@ -147,6 +153,6 @@ def test_preview_cancellation_propagates() -> None:
         worker = AsyncMock()
         worker.download_media.side_effect = asyncio.CancelledError
         with pytest.raises(asyncio.CancelledError):
-            await send_preview(message(), normalize_worker_result(payload()), cast(Any, worker))
+            await send_preview(message(), normalize_worker_result(payload()), cast(Any, worker), buttons([]))
 
     asyncio.run(run())

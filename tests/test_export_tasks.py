@@ -46,9 +46,10 @@ def test_unknown_export_recovery_uses_durable_snapshot_and_original_target(tmp_p
         app.notion.factory = lambda token: NotionClient(token, httpx.MockTransport(handler))
         value = article()
         key = app.pending.put(1, 1, value, (), {})
-        with pytest.raises(NotionError, match="write_outcome_unknown"):
-            await app.save(1, message(), key, TARGET)
-        task_id = app.secrets.export_tasks(1)[0]["id"]
+        await app.save(1, message(), key, TARGET)
+        task = app.secrets.export_tasks(1)[0]
+        assert task["job"]["status"] == "unknown"
+        task_id = task["id"]
         app.pending.delete(key)
         await app.close()
 

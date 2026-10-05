@@ -55,14 +55,14 @@ class Settings(BaseSettings):
     notion_credentials_key: SecretStr = SecretStr("")
     notion_database_path: Path = Path("data/notion/notion.sqlite3")
     notion_pkce_enabled: bool = False
-    llm_enabled: bool = False
+    llm_enabled: bool = True
     openai_api_key: SecretStr = SecretStr("")
-    openai_model: str = ""
+    openai_model: str = "gpt-6.1-sol"
     openai_base_url: str = "https://api.openai.com/v1"
     llm_api_mode: Literal["responses", "chat"] = "responses"
     llm_structured_mode: Literal["strict", "json"] = "strict"
     llm_context_tokens: int = Field(default=32768, ge=4096)
-    llm_reasoning_efforts: str = ""
+    llm_reasoning_efforts: str = "low,medium,high"
     llm_model_capabilities: dict[str, ModelCapability] = Field(default_factory=dict)
     llm_chat_token_parameter: Literal["max_completion_tokens", "max_tokens"] = "max_completion_tokens"
     llm_concurrency: int = Field(default=2, ge=1, le=8)
@@ -70,11 +70,11 @@ class Settings(BaseSettings):
     llm_verify_risks: bool = False
     llm_translation_glossaries: dict[str, dict[str, str]] = Field(default_factory=dict)
     llm_translation_expansion_ratios: dict[str, float] = Field(default_factory=dict)
-    llm_reasoning_effort: ReasoningEffort = None
+    llm_reasoning_effort: ReasoningEffort = "high"
     openai_timeout_seconds: float = Field(default=60, gt=0, le=180)
     llm_max_output_tokens: int = Field(default=4096, ge=100, le=16384)
     llm_max_tool_calls: int = Field(default=4, ge=1, le=4)
-    llm_daily_budget: float = Field(default=1, ge=0)
+    llm_daily_budget: float = Field(default=0, ge=0)
     llm_input_usd_per_million: float = Field(default=0, ge=0)
     llm_output_usd_per_million: float = Field(default=0, ge=0)
 
@@ -128,10 +128,8 @@ class Settings(BaseSettings):
                 raise ValueError("incomplete Notion configuration")
             if urlsplit(self.notion_oauth_redirect_uri).scheme != "https":
                 raise ValueError("Notion OAuth redirect must use HTTPS")
-        if self.llm_enabled and not self.openai_model:
+        if self.llm_enabled and (not self.openai_api_key.get_secret_value() or not self.openai_model):
             raise ValueError("LLM configuration is incomplete")
-        if self.llm_enabled and (self.llm_input_usd_per_million <= 0 or self.llm_output_usd_per_million <= 0):
-            raise ValueError("LLM price rates are required")
         return self
 
     @property

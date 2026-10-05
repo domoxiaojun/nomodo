@@ -20,6 +20,7 @@ from simpread.worker import PreparedArticle, WorkerError
 
 
 def settings(tmp_path: Path, **kwargs: Any) -> Settings:
+    kwargs.setdefault("llm_enabled", False)
     return Settings(
         reader_bot_token=SecretStr("123:fixture"),
         reader_api_id=1,
@@ -40,6 +41,9 @@ def message(uid: int = 1, chat_id: int = 1, text: str = "", kind: str = "private
         text=text,
         reply_text=AsyncMock(),
         reply_document=AsyncMock(),
+        reply_rich=AsyncMock(),
+        edit_text=AsyncMock(),
+        edit_reply_markup=AsyncMock(),
         reply_photo=AsyncMock(),
         reply_video=AsyncMock(),
         delete=AsyncMock(),
@@ -128,11 +132,11 @@ def test_whitelist_mixed_urls_and_no_implicit_writes(tmp_path: Path) -> None:
         msg = message(text="https://unsupported.example/a https://youtube.com/watch?v=a")
         await app.dispatch(None, msg)
         assert app.pending.count(1) == 1
-        assert any("成功 1 / 2" in c.args[0] for c in msg.reply_text.call_args_list)
+        assert any("成功 1/2" in c.args[0] for c in msg.reply_text.return_value.edit_text.call_args_list)
         stranger = message(uid=99, text="https://youtube.com/watch?v=a")
         await app.dispatch(None, stranger)
         assert cast(Any, app.worker).prepare.await_count == 2
-        stranger.reply_text.assert_not_awaited()
+        stranger.reply_text.assert_awaited_once()
         await app.close()
 
     asyncio.run(run())
@@ -232,7 +236,8 @@ def test_media_caption_is_parsed_and_list_preview_is_not_empty(tmp_path: Path) -
         msg.caption = "https://example.com"
         await app.dispatch(None, msg)
         cast(Any, app.worker).prepare.assert_awaited_once_with("https://example.com")
-        assert "first" in msg.reply_text.call_args.args[0]
+        rendered = str(msg.reply_rich.call_args.args[0])
+        assert "first" in rendered and "second" in rendered
         await app.close()
 
     asyncio.run(run())
@@ -242,7 +247,7 @@ def test_cancel_cannot_interrupt_another_chat(tmp_path: Path) -> None:
     async def run() -> None:
         app = App(settings(tmp_path))
         running = asyncio.create_task(asyncio.Event().wait())
-        app.active[1], app.active_chats[1] = running, 1
+        app.active[1], app.active_chat[1] = running, 1
         msg = message(text="/cancel", chat_id=-10, kind="group")
         await app.dispatch(None, msg)
         assert not running.cancelling()
@@ -266,17 +271,13 @@ def test_notion_save_keeps_article_media_until_cancel(tmp_path: Path, failure: b
             side_effect=NotionError("rate_limited") if failure else None,
             return_value={"url": "https://notion.so/page", "warnings": []},
         )))
-        if failure:
-            with pytest.raises(NotionError, match="rate_limited"):
-                await app.save(1, message(), key, "target")
-        else:
-            await app.save(1, message(), key, "target")
+        await app.save(1, message(), key, "target")
         cast(Any, app.worker).release.assert_not_awaited()
         stored = app.pending.get(1, 1, key)
         assert stored and stored[1] == ("lease",)
         await app.dispatch(None, message(text="/cancel"))
-        cast(Any, app.worker).release.assert_awaited_once_with("lease")
-        assert app.pending.get(1, 1, key) is None
+        cast(Any, app.worker).release.assert_not_awaited()
+        assert app.pending.get(1, 1, key)
         await app.close()
 
     asyncio.run(run())
@@ -313,5 +314,55 @@ def test_maintenance_renews_busy_expired_article_then_releases_when_idle(tmp_pat
         assert not app.pending.entries()
         cast(Any, app.worker).release.assert_awaited_once_with("lease")
         await app.close()
+
+    asyncio.run(run())
+
+
+def test_private_onboarding_preserves_whitelist(tmp_path: Path) -> None:
+    async def run() -> None:
+        app = App(settings(tmp_path))
+        cast(Any, app.worker).prepare = AsyncMock()
+        try:
+            for command in ('/start', '/help', '/id', '/start@reader_bot'):
+                msg = message(uid=99, text=command)
+                await app.dispatch(None, msg)
+                assert '99' in msg.reply_text.call_args.args[0]
+            group = message(uid=99, text='/start', kind='group')
+            await app.dispatch(None, group)
+            group.reply_text.assert_not_awaited()
+            stranger = message(uid=99, text='/read https://youtube.com/watch?v=a')
+            await app.dispatch(None, stranger)
+            stranger.reply_text.assert_awaited_once()
+            cast(Any, app.worker).prepare.assert_not_awaited()
+            assert app.pending.count(99) == 0
+        finally:
+            await app.close()
+
+    asyncio.run(run())
+
+
+def test_start_reply_through_real_telegram_message(tmp_path: Path) -> None:
+    from pyrogram import enums
+    from pyrogram.types import Chat, Message, User
+
+    async def run() -> None:
+        app = App(settings(tmp_path))
+        client = SimpleNamespace(send_message=AsyncMock())
+        msg = Message(
+            id=123,
+            client=cast(Any, client),
+            chat=Chat(id=99, type=enums.ChatType.PRIVATE),
+            from_user=User(id=99, first_name='Fixture'),
+            text=cast(Any, '/start'),
+        )
+        try:
+            await app.dispatch(client, msg)
+            client.send_message.assert_awaited_once()
+            sent = client.send_message.call_args.kwargs
+            assert sent['chat_id'] == 99
+            assert '99' in sent['text']
+            assert sent['link_preview_options'].is_disabled is True
+        finally:
+            await app.close()
 
     asyncio.run(run())

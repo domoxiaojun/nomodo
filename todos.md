@@ -1,0 +1,23 @@
+# 合并 simpread_tgbot 与 simpread_tgbot-deploy
+
+两个目录是同一 Git 仓库的 worktree。`simpread_tgbot` 在 `main`（`9aa10e5`）上有未提交的内容保真、导出任务和 AI 阅读助手。`simpread_tgbot-deploy` 的 `codex/env-compose-deploy` 等于 `origin/main`（`9371907`），包含 Compose Worker、富消息交互和 Notion 引导。
+
+统一后的代码留在本目录。不删除另一个 worktree，不推送，不部署。
+
+## 取舍
+
+- 交互、命令菜单、富消息、Notion 引导、Reader+Worker Compose：以部署线为准。
+- 正文结构、小红书链接、导出任务快照、分块 AI 阅读：保留当前未提交实现，接到部署线的 Telegram 外壳上。
+- 用户 LLM 默认开启，模型默认 `gpt-6.1-sol`。单价不再作为启动条件；配置了单价时仍做每日预算。
+- 思考强度仍须在能力列表中声明。`.env.example` 同时给出 `LLM_REASONING_EFFORT=high` 和 `LLM_REASONING_EFFORTS`。
+- 普通私聊文字对当前文章提问；`/agent` 才生成计划。`/cancel` 不删除文章。
+- 预览走一条富消息。小红书测试改为检查富消息里的媒体顺序，不再要求相册分批。
+
+## 任务
+
+- [x] 提交当前未提交的阅读与内容改动，作为合并基线
+- [x] 合并 `codex/env-compose-deploy`
+- [x] 合并配置、Pending、回调、链接提取和部署文件
+- [x] 以部署线 `app.py` 为外壳，接上选择、导出任务、AI 阅读和优雅退出
+- [x] 合并测试与说明，跑 pytest、Ruff、mypy
+- [x] 提交合并结果

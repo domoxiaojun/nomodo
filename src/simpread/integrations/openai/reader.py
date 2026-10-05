@@ -114,7 +114,10 @@ class ReaderService:
         capability = self.settings.llm_model_capabilities.get(model)
         supported = (capability.reasoning_efforts if capability else
                      self.settings.reasoning_efforts if model == self.settings.openai_model else ())
-        effort = prefs.get("reasoning", self.settings.llm_reasoning_effort)
+        if "reasoning" in prefs:
+            effort = prefs["reasoning"]
+        else:
+            effort = prefs.get("reasoning_effort") or self.settings.llm_reasoning_effort
         if effort is not None and effort not in supported:
             raise LLMError("reasoning_unsupported")
         return {

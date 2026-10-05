@@ -40,9 +40,11 @@ def fixture_article(text: str = "Paris is the capital.\n\nSecond paragraph.") ->
 
 
 def app_for(tmp: Path, **kwargs: Any) -> App:
+    defaults: dict[str, Any] = {"llm_reasoning_effort": None, "llm_reasoning_efforts": ""}
+    defaults.update(kwargs)
     app = App(settings(tmp, llm_enabled=True, openai_api_key=SecretStr("fixture"), openai_model="fixture",
                        llm_input_usd_per_million=1, llm_output_usd_per_million=1, llm_daily_budget=100,
-                       **kwargs))
+                       **defaults))
     app.pending.preferences(1, {"llm": True})
     return app
 

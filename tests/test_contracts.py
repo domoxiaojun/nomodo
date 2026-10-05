@@ -29,15 +29,12 @@ def result_payload() -> dict:
     }
 
 
-def test_pending_store_owner_isolation_and_budget(tmp_path: Path) -> None:
+def test_pending_store_owner_isolation(tmp_path: Path) -> None:
     store = PendingStore(tmp_path / "reader.sqlite3")
     article = normalize_worker_result(result_payload())
     key = store.put(1, 10, article, ("lease",), result_payload())
     assert store.get(1, 10, key) is not None
     assert store.get(2, 10, key) is None
-    assert store.reserve(1, 0.4, 1.0)
-    assert store.reserve(1, 0.6, 1.0)
-    assert not store.reserve(1, 0.1, 1.0)
     store.close()
 
 
@@ -133,6 +130,7 @@ def test_worker_rejects_unsupported_without_post() -> None:
 
 def test_settings_requires_secret_and_whitelist() -> None:
     settings = Settings(
+        llm_enabled=False,
         reader_bot_token=SecretStr("123:abc"),
         reader_api_id=1,
         reader_api_hash=SecretStr("hash"),

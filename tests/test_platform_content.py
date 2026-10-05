@@ -1,7 +1,6 @@
 import asyncio
 import copy
 import io
-from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock
 from uuid import uuid4
@@ -18,6 +17,7 @@ from simpread.integrations.notion.client import NotionError
 from simpread.integrations.notion.media import upload_media
 from simpread.integrations.notion.tree import recover_tree, write_tree
 from simpread.telegram.media import send_preview
+from simpread.telegram.ui import buttons
 from simpread.worker import WorkerClient
 
 
@@ -129,29 +129,26 @@ def test_missing_recovery_marker_keeps_unknown() -> None:
     asyncio.run(run())
 
 
-class LargeStream(httpx.AsyncByteStream):
-    async def __aiter__(self):
-        for _ in range(81):
-            yield b"x" * (256 * 1024)
-
-
-def test_large_preview_streams_to_disk_and_cleans_up() -> None:
+def test_oversize_preview_stays_inside_one_rich_message() -> None:
     async def run() -> None:
-        paths = []
-        worker = WorkerClient("http://worker", "fixture", "1", transport=httpx.MockTransport(
-            lambda req: httpx.Response(200, stream=LargeStream(), headers={"Content-Type": "video/mp4"})))
+        downloaded = False
+
+        def handler(req: httpx.Request) -> httpx.Response:
+            nonlocal downloaded
+            downloaded = True
+            return httpx.Response(200, content=b"x" * 1024, headers={"Content-Type": "video/mp4"})
+
+        worker = WorkerClient("http://worker", "fixture", "1", transport=httpx.MockTransport(handler))
         msg = message()
-
-        async def video(path: str) -> None:
-            paths.append(Path(path))
-            assert paths[-1].stat().st_size == 81 * 256 * 1024
-
-        msg.reply_video.side_effect = video
         article = normalize_worker_result({"sourceUrl": "https://example.com", "leaseId": "lease", "media": [
             {"mediaId": "large", "type": "video", "mimeType": "video/mp4", "sizeBytes": 21_000_000}]})
         try:
-            assert await send_preview(msg, article, worker) == 0
-            assert len(paths) == 1 and not paths[0].exists()
+            await send_preview(msg, article, worker, buttons([]))
+            assert not downloaded
+            msg.reply_video.assert_not_awaited()
+            msg.reply_photo.assert_not_awaited()
+            assert msg.reply_rich.await_count == 1
+            assert "未嵌入" in str(msg.reply_rich.call_args.args[0])
         finally:
             await worker.close()
     asyncio.run(run())

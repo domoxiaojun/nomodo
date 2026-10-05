@@ -1,6 +1,33 @@
 name: simpread-tgbot
 services:
+  worker:
+    image: simpread-worker:f4b704b
+    build:
+      context: https://github.com/domoxiaojun/parse_hub_bot.git#f4b704b2f539d453ab64d9326cd26991eb2f18f0
+      dockerfile: deploy/Dockerfile
+    command: ["python", "-m", "ext.worker"]
+    env_file: [../worker.env]
+    environment:
+      WORKER_HOST: 0.0.0.0
+      WORKER_ALLOW_CONTAINER_BIND: "true"
+      WORKER_PORT: "8080"
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 45s
+    volumes:
+      - ../data/worker/data:/app/data
+      - ../data/worker/downloads:/app/downloads
+      - ../data/worker/logs:/app/logs
+    healthcheck:
+      test: ["CMD", "python", "-m", "ext.worker.healthcheck"]
+      interval: 15s
+      timeout: 10s
+      start_period: 60s
+      retries: 3
   reader:
+    depends_on:
+      worker:
+        condition: service_healthy
     image: simpread-tgbot:${READER_IMAGE_TAG:-local}
     build:
       context: ..

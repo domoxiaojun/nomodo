@@ -1,0 +1,47 @@
+"""User-facing guidance and next steps shared by commands and buttons."""
+
+ERRORS = {
+    'action_expired': ('这个操作按钮已失效', '它可能已被处理或超过有效期，请返回相应页面重新操作。'),
+    'article_expired': ('这篇文章已过期或不属于你', '重新发送原文链接，或从最近文章选择仍有效的内容。'),
+    'invalid_input': ('没有识别这个输入', '请直接发送链接，或从下方入口选择操作。'),
+    'unsupported_url': ('暂不支持这个链接', '请查看支持的平台。分享短链可以尝试替换为原文链接。'),
+    'too_many_links': ('链接数量超过上限', '一次最多处理 10 个链接，请分批发送。'),
+    'worker_unavailable': ('暂时连不上解析服务', '原来的文章仍可阅读和导出。稍后可以重试本次链接。'),
+    'parse_failed': ('这次没有解析成功', '确认链接可公开访问；需要登录的平台可能需管理员更新 Cookie。'),
+    'credentials_required': ('平台需要登录凭据', '请联系管理员检查 Worker 的平台配置。'),
+    'credentials_invalid': ('平台凭据未通过验证', '请联系管理员检查 Worker 配置，无需重新连接 Notion。'),
+    'content_unavailable': ('没有取到笔记内容', '请确认原文仍可访问，并发送完整分享链接。'),
+    'upstream_timeout': ('平台响应超时', '请稍后重试。已有文章仍保留。'),
+    'upstream_http': ('平台请求失败', '请稍后重试。已有文章仍保留。'),
+    'upstream_contract': ('平台数据无法解析', '需要检查 Worker 的解析器兼容性。'),
+    'media_failed': ('平台媒体下载失败', '可以稍后重试，或先查看原文。'),
+    'article_post_link_required': ('需要原始推文链接', '这是 X 文章直链。请发送发布这篇文章的原始推文链接。'),
+    'llm_disabled': ('AI 当前已关闭', '可以打开 AI 设置，也可以继续阅读和导出原文。'),
+    'llm_auth_failed': ('AI 服务认证失败', '请管理员更新 Key。原文和已有 AI 结果仍保留。'),
+    'llm_config_incomplete': ('AI 服务尚未配置完成', '请联系管理员；原文仍可导出。'),
+    'llm_failed': ('AI 没有返回有效结果', '可以重试，或先导出原文。'),
+    'llm_timeout': ('AI 生成超时', '可以重试，或在设置中降低思考强度。'),
+    'input_too_large': ('文章超出 AI 处理上限', '完整原文仍可导出。请换一篇较短的文章使用 AI。'),
+    'authorization_required': ('还没有连接 Notion', '点击连接按钮完成授权后，即可选择保存位置。'),
+    'authorization_expired': ('Notion 授权已失效', '重新连接后再继续保存，原文仍保留。'),
+    'target_required': ('尚未选择 Notion 保存位置', '选择一个已授权的页面或数据源。'),
+    'write_outcome_unknown': ('Notion 保存结果暂时无法确认', '请先检查 Notion，按页面核对恢复；不会自动重复创建。'),
+    'rate_limited': ('Notion 正在限制请求频率', '请稍后再试，原文和保存进度仍保留。'),
+    'notion_unavailable': ('暂时连不上 Notion', '请稍后重试。原文和媒体仍保留。'),
+    'schema_confirmation_required': ('保存位置的属性已发生变化', '请重新点击保存，核对新的属性后确认。'),
+}
+
+HELP = {
+    'read': ('解析与阅读', '发送链接或带链接的分享消息即可。\n每篇文章会合并为一条富消息。'
+             '\n同一链接在有效期内优先打开已有结果；需要更新时点击「重新解析」。'
+             '\n遇到长文或超限媒体，结果内会提示；完整文字可导出。'),
+    'ai': ('AI 操作', '先解析文章，再点摘要、翻译或更多操作。\n默认使用 gpt-6.1-sol / high。'
+           '\n已有结果会直接显示，点击「重新生成」才重新调用。'
+           '\n打开旧文章后，后续命令会处理这篇文章。'),
+    'notion': ('保存到 Notion', '连接 Notion → 授权页面 → 选择保存位置 → 确认保存。'
+               '\n从文章开始连接时，会记住要保存的文章。'
+               '\n若保存结果未知，请先检查 Notion，再使用核对恢复功能，避免重复页面。'),
+    'controls': ('任务、文件与隐私', '等待时可以查看当前任务或取消；不会自动删除文章。'
+                 '\nMarkdown 适合编辑，HTML 适合离线阅读，导出文件带文章标题。'
+                 '\n移除文章和断开 Notion 均需确认。群聊只支持解析、阅读和导出。'),
+}
