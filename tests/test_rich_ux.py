@@ -249,6 +249,46 @@ def test_cancel_button_cannot_cancel_another_chat(tmp_path: Path) -> None:
     asyncio.run(run())
 
 
+@pytest.mark.parametrize(("flag", "expected"), [("reused", "原来的页面"), ("recreated", "重新创建")])
+def test_save_notice_distinguishes_existing_and_recreated_pages(tmp_path: Path, flag: str, expected: str) -> None:
+    async def run() -> None:
+        app = App(settings(tmp_path))
+        key = app.pending.put(1, 1, article(), (), {})
+        app.notion = cast(Any, SimpleNamespace(export_page=AsyncMock(return_value={
+            "url": "https://www.notion.so/page", "warnings": [], flag: True,
+        })))
+        msg = message()
+        try:
+            await app.save(1, msg, key, "target")
+            text = msg.reply_text.return_value.edit_text.call_args.args[0]
+            url = msg.reply_text.return_value.edit_text.call_args.kwargs["reply_markup"].inline_keyboard[0][0].url
+            assert expected in text and url == "https://www.notion.so/page"
+        finally:
+            await app.close()
+
+    asyncio.run(run())
+
+
+def test_save_confirmation_says_a_new_child_page_will_be_created(tmp_path: Path) -> None:
+    async def run() -> None:
+        app = App(settings(tmp_path))
+        key = app.pending.put(1, 1, article(), (), {})
+        app.notion = cast(Any, SimpleNamespace(
+            target=lambda *_args: {"id": "34f4f127-954e-80ec-a245-dd274f101fff", "title": "", "kind": "page"},
+            schema=AsyncMock(return_value={}),
+        ))
+        msg = message()
+        try:
+            await app.request_save(1, msg, key)
+            text = msg.reply_text.call_args.args[0]
+            assert "未命名页面" in text and "新建一篇页面" in text
+            assert "34f4f127-954e-80ec-a245-dd274f101fff" in text
+        finally:
+            await app.close()
+
+    asyncio.run(run())
+
+
 def test_failed_notion_save_keeps_media_for_retry(tmp_path: Path) -> None:
     from simpread.integrations.notion import NotionError
     async def run() -> None:

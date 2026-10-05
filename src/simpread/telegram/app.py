@@ -90,6 +90,17 @@ MESSAGES = {
 }
 
 
+def notion_save_notice(result: dict[str, Any], *, with_url: bool = False) -> str:
+    url = str(result.get("url") or "")
+    if result.get("reused"):
+        text = "这篇已经在 Notion 里，打开的是原来的页面。"
+    elif result.get("recreated"):
+        text = "原来的页面已经不在，已重新创建。"
+    else:
+        return "已保存：" + url if with_url else "已保存到 Notion。"
+    return text + ("\n" + url if with_url and url else "")
+
+
 def private(message: Any) -> bool:
     return message is not None and message.chat.type in {"private", enums.ChatType.PRIVATE}
 
@@ -574,11 +585,13 @@ class App:
             title, detail = ERRORS.get(error.code, ("Notion 保存未完成", "原文和媒体保留，请检查授权后重试。"))
             await progress.update(title + "\n" + detail, done=True, markup=buttons(rows))
             return
-        await progress.update("已保存到 Notion。" + ("\n部分媒体以外链或说明保留。" if result["warnings"] else ""),
-                              done=True, markup=InlineKeyboardMarkup([
-                                  [InlineKeyboardButton("打开 Notion 页面", url=result["url"])],
-                                  [InlineKeyboardButton("查看原文", callback_data=make_callback(key, "open"))],
-                              ]))
+        notice = notion_save_notice(result)
+        if result.get("warnings"):
+            notice += "\n部分媒体以外链或说明保留。"
+        await progress.update(notice, done=True, markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("打开 Notion 页面", url=result["url"])],
+            [InlineKeyboardButton("查看原文", callback_data=make_callback(key, "open"))],
+        ]))
         # The article keeps its media lease so the user can retry or save to another target.
 
     async def request_save(self, user_id: int, message: Any, key: str, target_id: str | None = None) -> None:
@@ -596,7 +609,12 @@ class App:
             return
         missing = await self.notion.schema(user_id, target["id"])
         self.pending.preferences(user_id, {"notion_resume": None})
-        description = f"确认保存到 Notion\n\n文章：{article.title or '无标题'}\n位置：{target['title'] or target['id']}"
+        place = target.get("title") or "未命名页面"
+        description = (
+            f"确认保存到 Notion\n\n文章：{article.title or '无标题'}\n位置：{place}\n将在这个位置下新建一篇页面。"
+        )
+        if not target.get("title"):
+            description += f"\n位置 ID：{target['id']}"
         if missing:
             description += "\n同时添加缺少属性：" + "、".join(missing)
         await self.approval(
@@ -1328,11 +1346,10 @@ class App:
                             result = await self.notion.export_page(
                                 uid, task_article, payload["target"], derived=task_record["job"].get("derived", {})
                             )
-                            await reply(
-                                message,
-                                "已保存：" + result["url"]
-                                + ("\n部分媒体已降级为说明或外链。" if result["warnings"] else ""),
-                            )
+                            notice = notion_save_notice(result, with_url=True)
+                            if result.get("warnings"):
+                                notice += "\n部分媒体已降级为说明或外链。"
+                            await reply(message, notice)
                         return
                     if payload["kind"] != "disconnect_notion":
                         self.selected(uid, message, payload["key"])

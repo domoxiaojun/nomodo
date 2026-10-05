@@ -79,6 +79,109 @@ def test_long_export_resume_no_duplicate_and_isolation(tmp_path: Path) -> None:
     asyncio.run(run())
 
 
+NEW = "33333333-3333-4333-8333-333333333333"
+
+
+def note() -> Any:
+    return normalize_worker_result(
+        {"sourceUrl": "https://example.com/note", "platform": "x", "title": "Note", "content": "hello", "leaseId": "l"}
+    )
+
+
+def notion_service(tmp_path: Path, handler: Any) -> tuple[NotionService, NotionStore]:
+    store = NotionStore(tmp_path / "n.db", "x" * 32)
+    store.put_credential(1, "secret")
+    store.save_target(1, {"id": TARGET, "kind": "page", "default": True, "title": "父页面"})
+
+    async def sleep(_: float) -> None:
+        return None
+
+    service = NotionService(
+        store,
+        Worker(),  # type: ignore[arg-type]
+        lambda token: NotionClient(token, httpx.MockTransport(handler), sleep),
+    )
+    return service, store
+
+
+@pytest.mark.parametrize("gone", ["trash", "archived", "missing"])
+def test_deleted_sent_page_is_recreated_once(tmp_path: Path, gone: str) -> None:
+    creates: list[str] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        path = req.url.path.rstrip("/")
+        if req.method == "GET" and path.endswith(PAGE):
+            if gone == "missing":
+                return httpx.Response(404, json={"object": "error", "status": 404})
+            body = {"id": PAGE, "url": "https://www.notion.so/old", "in_trash" if gone == "trash" else "archived": True}
+            return httpx.Response(200, json=body)
+        if req.method == "GET" and path.endswith(NEW):
+            return httpx.Response(200, json={"id": NEW, "url": "https://www.notion.so/new"})
+        if req.method == "GET":
+            return httpx.Response(200, json={"id": TARGET})
+        if req.method == "POST" and path.endswith("/pages"):
+            page_id = PAGE if not creates else NEW
+            creates.append(page_id)
+            url = "https://www.notion.so/old" if page_id == PAGE else "https://www.notion.so/new"
+            return httpx.Response(200, json={"id": page_id, "url": url})
+        return httpx.Response(200, json={})
+
+    async def run() -> None:
+        service, store = notion_service(tmp_path, handler)
+        value = note()
+        try:
+            first = await service.export_page(1, value, TARGET, leases=("l",))
+            assert first["page_id"] == PAGE and "recreated" not in first
+            second = await service.export_page(1, value, TARGET)
+            stored = store.export_status(1, value.content_hash, TARGET) or {}
+            assert second["recreated"] is True and second["page_id"] == NEW
+            assert stored["status"] == "sent" and stored["page_id"] == NEW and "recreated" not in stored
+            third = await service.export_page(1, value, TARGET)
+            assert third["reused"] is True and third["url"] == "https://www.notion.so/new" and creates == [PAGE, NEW]
+            assert "reused" not in (store.export_status(1, value.content_hash, TARGET) or {})
+        finally:
+            store.close()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("failure", ["status", "network"])
+def test_page_check_failure_does_not_create_another_page(tmp_path: Path, failure: str) -> None:
+    creates = 0
+    sent = False
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        nonlocal creates
+        path = req.url.path.rstrip("/")
+        if req.method == "GET" and path.endswith(PAGE) and sent:
+            if failure == "network":
+                raise httpx.ConnectError("down")
+            return httpx.Response(500, json={})
+        if req.method == "GET":
+            return httpx.Response(200, json={"id": TARGET})
+        if req.method == "POST" and path.endswith("/pages"):
+            creates += 1
+            return httpx.Response(200, json={"id": PAGE, "url": "https://www.notion.so/old"})
+        return httpx.Response(200, json={})
+
+    async def run() -> None:
+        nonlocal sent
+        service, store = notion_service(tmp_path, handler)
+        value = note()
+        try:
+            await service.export_page(1, value, TARGET)
+            sent = True
+            expected = "notion_unavailable" if failure == "network" else "notion_request_failed"
+            with pytest.raises(NotionError, match=expected):
+                await service.export_page(1, value, TARGET)
+            stored = store.export_status(1, value.content_hash, TARGET) or {}
+            assert creates == 1 and stored["status"] == "sent" and stored["page_id"] == PAGE
+        finally:
+            store.close()
+
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize("failure", ["timeout", "cancel", "500"])
 def test_unknown_write_is_not_replayed(tmp_path: Path, failure: str) -> None:
     async def run() -> None:

@@ -17,6 +17,25 @@ from .store import NotionStore
 from .tree import nested, recover_tree, write_tree
 
 
+async def current_page(client: NotionClient, page_id: str) -> dict[str, Any] | None:
+    """Return a page that can still be opened, or None when it was deleted or trashed."""
+    try:
+        page = await client.target(page_id, "page")
+    except NotionError as error:
+        if error.status == 404:
+            return None
+        raise
+    if page.get("archived") or page.get("in_trash"):
+        return None
+    return page
+
+
+def forget_page(job: dict[str, Any]) -> None:
+    for field in ("tree_ops", "tree_ids", "tree_next"):
+        job.pop(field, None)
+    job.update(page_id="", url="", status="pending", in_flight=False, next_batch=0, error=None)
+
+
 class NotionService:
     def __init__(
         self, store: NotionStore, worker: WorkerClient, factory: Callable[[str], NotionClient] = NotionClient
@@ -114,8 +133,21 @@ class NotionService:
                 if job and "article" not in job:
                     job.update(article=snapshot.model_dump(mode="json"), derived=derived or {})
                     self.store.save_export(user_id, article.content_hash, target_id, job)
+                recreated = False
                 if job and job["status"] == "sent":
-                    return job
+                    page_id = str(job.get("page_id") or "")
+                    alive = await current_page(client, page_id) if page_id else None
+                    if alive is not None:
+                        url = alive.get("url")
+                        if isinstance(url, str) and url.startswith("https://") and url != job.get("url"):
+                            job["url"] = url
+                            self.store.save_export(user_id, article.content_hash, target_id, job)
+                        if not str(job.get("url") or "").startswith("https://"):
+                            raise NotionError("page_url_unavailable")
+                        return {**job, "reused": True}
+                    forget_page(job)
+                    recreated = True
+                    self.store.save_export(user_id, article.content_hash, target_id, job)
                 if job and (job["status"] == "unknown" or job.get("in_flight")):
                     raise NotionError("write_outcome_unknown")
                 if job:
@@ -194,7 +226,7 @@ class NotionService:
                     raise NotionError("page_url_unavailable")
                 job.update(status="sent", error=None)
                 self.store.save_export(user_id, article.content_hash, target_id, job)
-                return job
+                return {**job, "recreated": True} if recreated else job
             except BaseException as error:
                 if job and job["status"] != "sent":
                     uncertain = not isinstance(error, NotionError) or error.code == "write_outcome_unknown"
