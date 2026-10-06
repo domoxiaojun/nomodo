@@ -12,11 +12,11 @@ from typing import Any, TypeVar
 
 from pydantic import BaseModel
 
-from simpread.config import Settings
-from simpread.domain import Article
-from simpread.domain.render import literal
-from simpread.integrations.notion.store import NotionStore
-from simpread.storage.pending import PendingStore
+from nomodo.config import Settings
+from nomodo.domain import Article
+from nomodo.domain.render import literal
+from nomodo.integrations.notion.store import NotionStore
+from nomodo.storage.pending import PendingStore
 
 from .client import LLMError, ResponsesClient, redact, sanitize
 from .content import Unit, encode, pack, prepare, restore, split_text, verify_citations, verify_transform

@@ -6,10 +6,10 @@ from typing import Any
 
 from PIL import Image
 
-from simpread.domain import Article
-from simpread.domain.media import media_kind
-from simpread.domain.urls import safe_url
-from simpread.worker import WorkerClient, WorkerError
+from nomodo.domain import Article
+from nomodo.domain.media import media_kind
+from nomodo.domain.urls import safe_url
+from nomodo.worker import WorkerClient, WorkerError
 
 from .blocks import text_blocks
 from .client import NotionClient, NotionError

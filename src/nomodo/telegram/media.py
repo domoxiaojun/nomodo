@@ -8,8 +8,8 @@ from typing import Any
 from pyrogram import enums, types
 from pyrogram.errors import BadRequest
 
-from simpread.domain import Article
-from simpread.worker import WorkerClient, WorkerError
+from nomodo.domain import Article
+from nomodo.worker import WorkerClient, WorkerError
 
 from .callbacks import preview, truncate
 from .presentation import article_rich

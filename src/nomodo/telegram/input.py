@@ -2,8 +2,8 @@
 
 from typing import Any
 
-from simpread.domain.urls import normalize_share_url
-from simpread.worker import WorkerError, extract_urls
+from nomodo.domain.urls import normalize_share_url
+from nomodo.worker import WorkerError, extract_urls
 
 
 def message_urls(message: Any, *, include_reply: bool = False) -> list[str]:

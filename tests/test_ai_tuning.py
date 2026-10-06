@@ -8,14 +8,14 @@ import httpx
 import pytest
 from test_ai_reader import Generator, app_for, fixture_article, response
 
-from simpread import eval_reader
-from simpread.domain import normalize_worker_result
-from simpread.integrations.openai.client import LLMError, ResponsesClient
-from simpread.integrations.openai.content import pack, prepare
-from simpread.integrations.openai.reader import ReaderService
-from simpread.integrations.openai.schemas import Answer, Citation
-from simpread.integrations.openai.tokens import Tokens
-from simpread.integrations.openai.tuning import AdaptiveGate, evidence_risks, ordered_map
+from nomodo import eval_reader
+from nomodo.domain import normalize_worker_result
+from nomodo.integrations.openai.client import LLMError, ResponsesClient
+from nomodo.integrations.openai.content import pack, prepare
+from nomodo.integrations.openai.reader import ReaderService
+from nomodo.integrations.openai.schemas import Answer, Citation
+from nomodo.integrations.openai.tokens import Tokens
+from nomodo.integrations.openai.tuning import AdaptiveGate, evidence_risks, ordered_map
 
 
 def test_reading_uses_input_window_instead_of_translation_cap(tmp_path: Path) -> None:

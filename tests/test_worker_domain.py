@@ -5,10 +5,10 @@ from typing import Any
 import httpx
 import pytest
 
-from simpread.domain import normalize_worker_result
-from simpread.domain.normalize import public_result
-from simpread.domain.urls import safe_url
-from simpread.worker import WorkerClient, WorkerError
+from nomodo.domain import normalize_worker_result
+from nomodo.domain.normalize import public_result
+from nomodo.domain.urls import safe_url
+from nomodo.worker import WorkerClient, WorkerError
 
 URL = "https://www.youtube.com/watch?v=fixture"
 

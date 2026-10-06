@@ -115,13 +115,13 @@ CPA 等服务将 `OPENAI_BASE_URL` 改为管理员部署地址，并按真实接
 评测入口默认仅检查本地样本，完全不创建模型客户端：
 
 ```sh
-uv run python -m simpread.eval_reader
+uv run python -m nomodo.eval_reader
 ```
 
 获得付费调用授权并配置正确模型、端点和价格后，操作者可显式运行：
 
 ```sh
-uv run python -m simpread.eval_reader --live --max-usd 0.50 --report evaluation.json
+uv run python -m nomodo.eval_reader --live --max-usd 0.50 --report evaluation.json
 ```
 
 可用 `--model`、`--fixtures`、`--operations summary,ask,translate` 选择模型/样本/任务。live 模式使用独立临时 SQLite，不读写生产文章、用户个人 Key，不发送 Telegram 消息或写 Notion；完成后删除临时数据，只保留指定报告。预算是按配置单价的估算，不保证供应商真实账单上限。报告包含实际请求数、耗时、费用不确定项、结果及空白人工评分栏；事实关键词命中只是诊断，不替代语义评分。默认入口和本轮验证没有运行 live。

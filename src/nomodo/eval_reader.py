@@ -12,11 +12,11 @@ from typing import Any
 
 from pydantic import SecretStr, ValidationError
 
-from simpread.config import Settings
-from simpread.domain import normalize_worker_result
-from simpread.integrations.openai.client import LLMError
-from simpread.integrations.openai.reader import ReaderService
-from simpread.storage import PendingStore
+from nomodo.config import Settings
+from nomodo.domain import normalize_worker_result
+from nomodo.integrations.openai.client import LLMError
+from nomodo.integrations.openai.reader import ReaderService
+from nomodo.storage import PendingStore
 
 
 def load_cases(path: Path) -> list[dict[str, Any]]:
@@ -43,7 +43,7 @@ async def evaluate(cases: list[dict[str, Any]], config: Settings, operations: li
         "protocol": config.llm_api_mode, "budget_usd": config.llm_daily_budget,
         "automatic_checks_are_not_quality_scores": True, "results": [],
     }
-    with tempfile.TemporaryDirectory(prefix="simpread-eval-") as directory:
+    with tempfile.TemporaryDirectory(prefix="nomodo-eval-") as directory:
         pending = PendingStore(Path(directory) / "reader.db", ttl=3600)
         reader = ReaderService(pending, config, None)
         pending.preferences(1, {"llm": True})

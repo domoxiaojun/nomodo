@@ -9,10 +9,10 @@ import pytest
 from pydantic import SecretStr
 from test_bot_oauth import message, settings
 
-from simpread.domain import normalize_worker_result
-from simpread.integrations.openai import LLMError, ResponsesClient
-from simpread.integrations.openai.client import sanitize
-from simpread.telegram.app import App
+from nomodo.domain import normalize_worker_result
+from nomodo.integrations.openai import LLMError, ResponsesClient
+from nomodo.integrations.openai.client import sanitize
+from nomodo.telegram.app import App
 
 
 @pytest.mark.parametrize("value", ["", "none", "minimal", "low", "medium", "high", "xhigh", "max", "invalid"])
@@ -151,7 +151,7 @@ def test_failed_media_send_releases_pending_lease(tmp_path: Path) -> None:
 
     from pyrogram.errors import BadRequest
 
-    from simpread.worker import PreparedArticle
+    from nomodo.worker import PreparedArticle
 
     async def run() -> None:
         app = App(settings(tmp_path))

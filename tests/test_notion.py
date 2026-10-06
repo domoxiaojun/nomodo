@@ -8,10 +8,10 @@ import httpx
 import pytest
 from PIL import Image
 
-from simpread.domain import normalize_worker_result
-from simpread.integrations.notion import WORKSPACE, NotionClient, NotionError, NotionService, NotionStore
-from simpread.integrations.notion.blocks import FIELDS, article_blocks, batches
-from simpread.integrations.notion.media import upload_media
+from nomodo.domain import normalize_worker_result
+from nomodo.integrations.notion import WORKSPACE, NotionClient, NotionError, NotionService, NotionStore
+from nomodo.integrations.notion.blocks import FIELDS, article_blocks, batches
+from nomodo.integrations.notion.media import upload_media
 
 TARGET = "11111111-1111-4111-8111-111111111111"
 PAGE = "22222222-2222-4222-8222-222222222222"
@@ -232,7 +232,7 @@ def test_finished_page_removes_checkpoint_lines(tmp_path: Path) -> None:
         if req.method == "POST" and path.endswith("/pages"):
             body = json.loads(req.content)
             marker = body["children"][0]["paragraph"]["rich_text"][0]["text"]["content"]
-            assert "simpread" not in marker.lower()
+            assert "simpread" not in marker.lower() and "nomodo" not in marker.lower()
             creates += 1
             return httpx.Response(200, json={"id": PAGE, "url": "https://www.notion.so/saved"})
         if req.method == "GET" and "/blocks/" in path and path.endswith("/children"):
@@ -260,7 +260,7 @@ def test_finished_page_removes_checkpoint_lines(tmp_path: Path) -> None:
             saved = await service.export_page(1, value, TARGET)
             assert saved["status"] == "sent" and creates == 1 and deleted == [MARKER_BLOCK, BATCH_BLOCK]
             stored = store.export_status(1, value.content_hash, TARGET) or {}
-            assert "simpread" not in str(stored["marker"]).lower()
+            assert "simpread" not in str(stored["marker"]).lower() and "nomodo" not in str(stored["marker"]).lower()
             again = await service.export_page(1, value, TARGET)
             assert again["reused"] is True and creates == 1
         finally:

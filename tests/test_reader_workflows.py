@@ -7,12 +7,12 @@ from unittest.mock import AsyncMock
 import pytest
 from test_bot_oauth import message, settings
 
-from simpread.domain import normalize_worker_result
-from simpread.storage import PendingStore
-from simpread.telegram.app import App, reply_all
-from simpread.telegram.callbacks import message_chunks
-from simpread.telegram.input import message_urls
-from simpread.worker import PreparedArticle
+from nomodo.domain import normalize_worker_result
+from nomodo.storage import PendingStore
+from nomodo.telegram.app import App, reply_all
+from nomodo.telegram.callbacks import message_chunks
+from nomodo.telegram.input import message_urls
+from nomodo.worker import PreparedArticle
 
 
 def article(title: str = "first") -> Any:

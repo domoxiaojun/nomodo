@@ -2,9 +2,9 @@ import json
 from datetime import UTC, datetime
 from typing import Any
 
-from simpread.domain import Article
-from simpread.domain.models import Block, Inline
-from simpread.domain.urls import safe_url
+from nomodo.domain import Article
+from nomodo.domain.models import Block, Inline
+from nomodo.domain.urls import safe_url
 
 from .client import NotionError
 

@@ -9,8 +9,8 @@ from lxml import html
 from markdown_it import MarkdownIt
 from pyrogram import types
 
-from simpread.domain import Article
-from simpread.domain.urls import safe_url
+from nomodo.domain import Article
+from nomodo.domain.urls import safe_url
 
 MAX_TEXT_BYTES = 27_000
 MAX_BLOCKS = 350

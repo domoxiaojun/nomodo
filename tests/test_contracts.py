@@ -9,12 +9,12 @@ import pytest
 from openai.types.shared import ReasoningEffort
 from pydantic import SecretStr
 
-from simpread.config import Settings
-from simpread.domain import normalize_worker_result
-from simpread.integrations.notion import NotionStore
-from simpread.integrations.openai import ResponsesClient
-from simpread.storage import PendingStore
-from simpread.worker import WorkerClient, WorkerError
+from nomodo.config import Settings
+from nomodo.domain import normalize_worker_result
+from nomodo.integrations.notion import NotionStore
+from nomodo.integrations.openai import ResponsesClient
+from nomodo.storage import PendingStore
+from nomodo.worker import WorkerClient, WorkerError
 
 
 def result_payload() -> dict:

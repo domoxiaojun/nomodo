@@ -11,12 +11,12 @@ from pyrogram.errors import BadRequest
 from test_bot_oauth import message, settings
 from test_rich_ux import article
 
-from simpread.integrations.notion import NotionError
-from simpread.integrations.openai import LLMError
-from simpread.integrations.openai.schemas import Enhancement
-from simpread.telegram.app import App
-from simpread.telegram.ui import Activity, Panel
-from simpread.worker import PreparedArticle, WorkerError
+from nomodo.integrations.notion import NotionError
+from nomodo.integrations.openai import LLMError
+from nomodo.integrations.openai.schemas import Enhancement
+from nomodo.telegram.app import App
+from nomodo.telegram.ui import Activity, Panel
+from nomodo.worker import PreparedArticle, WorkerError
 
 
 def query(uid: int, data: str, chat_id: int = 1) -> Any:
@@ -99,7 +99,7 @@ def test_model_picker_select_reset_and_failure_routes(tmp_path: Path, monkeypatc
         provider = SimpleNamespace(client=SimpleNamespace(models=SimpleNamespace(list=AsyncMock(return_value=
             SimpleNamespace(data=[SimpleNamespace(id='gpt-6.1-sol'), SimpleNamespace(id='other-model')])))),
             close=AsyncMock())
-        monkeypatch.setattr('simpread.telegram.app.ResponsesClient', lambda *a, **k: provider)
+        monkeypatch.setattr('nomodo.telegram.app.ResponsesClient', lambda *a, **k: provider)
         try:
             msg = message()
             await app.model_choices(1, msg)

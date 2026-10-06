@@ -11,10 +11,10 @@ from pydantic import SecretStr
 from test_bot_oauth import message, settings
 from test_rich_ux import article
 
-from simpread.integrations.notion import NotionStore
-from simpread.integrations.openai.schemas import Enhancement
-from simpread.oauth.server import OAuthServer
-from simpread.telegram.app import App
+from nomodo.integrations.notion import NotionStore
+from nomodo.integrations.openai.schemas import Enhancement
+from nomodo.oauth.server import OAuthServer
+from nomodo.telegram.app import App
 
 
 def test_notions_target_selection_resumes_exact_article_with_confirmation(tmp_path: Path) -> None:
@@ -121,7 +121,7 @@ def test_oauth_browser_success_and_error_have_safe_next_action(tmp_path: Path) -
         try:
             async with TestClient(TestServer(app)) as http:
                 response = await http.get('/notion/oauth/callback', params={'state': state, 'code': 'private-code'},
-                                          headers={'Cookie': 'simpread_oauth=browser'})
+                                          headers={'Cookie': 'nomodo_oauth=browser'})
                 html = await response.text()
                 assert response.status == 200 and response.content_type == 'text/html'
                 assert 'https://t.me/domoparsebot?start=notion' in html

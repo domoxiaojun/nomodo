@@ -11,7 +11,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from typing import Any
 
-from simpread.domain import Article
+from nomodo.domain import Article
 
 from .client import redact
 from .content import Unit, fields, pack, restore, split_text, walk

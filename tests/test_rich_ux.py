@@ -11,15 +11,15 @@ from pyrogram import enums, raw, types
 from pyrogram.errors import BadRequest
 from test_bot_oauth import message, settings
 
-from simpread.domain import normalize_worker_result
-from simpread.domain.models import Block, MediaAsset
-from simpread.integrations.openai.schemas import Enhancement
-from simpread.telegram.app import App
-from simpread.telegram.input import message_urls
-from simpread.telegram.media import DeliveryUncertain, prepare_media, send_preview
-from simpread.telegram.presentation import ai_rich, article_rich
-from simpread.telegram.ui import buttons
-from simpread.worker import PreparedArticle, WorkerError
+from nomodo.domain import normalize_worker_result
+from nomodo.domain.models import Block, MediaAsset
+from nomodo.integrations.openai.schemas import Enhancement
+from nomodo.telegram.app import App
+from nomodo.telegram.input import message_urls
+from nomodo.telegram.media import DeliveryUncertain, prepare_media, send_preview
+from nomodo.telegram.presentation import ai_rich, article_rich
+from nomodo.telegram.ui import buttons
+from nomodo.worker import PreparedArticle, WorkerError
 
 
 def article() -> Any:
@@ -388,7 +388,7 @@ def test_save_parent_list_offers_a_new_page_only_while_saving(tmp_path: Path) ->
 
 
 def test_workspace_permission_offers_an_existing_parent(tmp_path: Path) -> None:
-    from simpread.integrations.notion import NotionError
+    from nomodo.integrations.notion import NotionError
     async def run() -> None:
         app = App(settings(tmp_path, notion_credentials_key=SecretStr("x" * 32)))
         key = app.pending.put(1, 1, article(), (), {})
@@ -408,7 +408,7 @@ def test_workspace_permission_offers_an_existing_parent(tmp_path: Path) -> None:
 
 
 def test_failed_notion_save_keeps_media_for_retry(tmp_path: Path) -> None:
-    from simpread.integrations.notion import NotionError
+    from nomodo.integrations.notion import NotionError
     async def run() -> None:
         app = App(settings(tmp_path))
         key = app.pending.put(1, 1, article(), ('lease',), {})

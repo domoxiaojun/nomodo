@@ -1111,7 +1111,7 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/ca/dd/56b584f08307864b47728752582e8c05a34c9cdfe50e78deedf6df1cbdd6/signerpy-0.12.0.tar.gz", hash = "sha256:b9c1b71f98710727ed903d825ab84ca532f06fdbfb71002c6b044ad93412bc91", size = 46076, upload-time = "2025-11-06T11:30:52.698Z" }
 
 [[package]]
-name = "simpread-tgbot"
+name = "nomodo"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

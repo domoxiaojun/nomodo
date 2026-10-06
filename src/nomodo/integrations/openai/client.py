@@ -15,8 +15,8 @@ from openai import APIConnectionError, APIStatusError, APITimeoutError, AsyncOpe
 from openai.types.shared import ReasoningEffort
 from pydantic import BaseModel
 
-from simpread.domain import Article
-from simpread.domain.models import Block
+from nomodo.domain import Article
+from nomodo.domain.models import Block
 
 from .schemas import ActionPlan, Enhancement
 from .tokens import Tokens

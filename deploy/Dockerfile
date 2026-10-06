@@ -19,4 +19,4 @@ RUN apt-get update && apt-get install -y --no-install-recommends libglib2.0-0 ca
 ENV PATH="/opt/venv/bin:$PATH" PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
 WORKDIR /app
 COPY --from=build /opt/venv /opt/venv
-CMD ["python", "-m", "simpread"]
+CMD ["python", "-m", "nomodo"]

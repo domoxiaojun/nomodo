@@ -1,7 +1,7 @@
 import re
 
-from simpread.domain import Article
-from simpread.domain.render import markdown_block
+from nomodo.domain import Article
+from nomodo.domain.render import markdown_block
 
 ACTIONS = {
     "save", "summary", "title", "tags", "translate", "normalize_markdown",

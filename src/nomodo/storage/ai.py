@@ -8,7 +8,7 @@ import time
 from datetime import UTC, datetime
 from typing import Any
 
-from simpread.integrations.openai.client import LLMError
+from nomodo.integrations.openai.client import LLMError
 
 
 class AIStore:

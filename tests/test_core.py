@@ -1,5 +1,5 @@
-from simpread.domain import normalize_worker_result
-from simpread.telegram.callbacks import make_callback, parse_callback
+from nomodo.domain import normalize_worker_result
+from nomodo.telegram.callbacks import make_callback, parse_callback
 
 
 def test_article_normalization_and_rendering():

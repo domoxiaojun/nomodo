@@ -9,14 +9,14 @@ import pytest
 from pydantic import SecretStr
 from test_bot_oauth import message, settings
 
-from simpread.domain import normalize_worker_result
-from simpread.domain.models import Article
-from simpread.integrations.openai.client import LLMError, ResponsesClient, sanitize
-from simpread.integrations.openai.content import fields, prepare, restore, verify_transform
-from simpread.integrations.openai.reader import credential, save_credential
-from simpread.integrations.openai.schemas import Tags, Transformation, TranslationUnit
-from simpread.integrations.openai.tokens import Tokens
-from simpread.telegram.app import App
+from nomodo.domain import normalize_worker_result
+from nomodo.domain.models import Article
+from nomodo.integrations.openai.client import LLMError, ResponsesClient, sanitize
+from nomodo.integrations.openai.content import fields, prepare, restore, verify_transform
+from nomodo.integrations.openai.reader import credential, save_credential
+from nomodo.integrations.openai.schemas import Tags, Transformation, TranslationUnit
+from nomodo.integrations.openai.tokens import Tokens
+from nomodo.telegram.app import App
 
 
 def response(body: Any, mode: str = "responses", *, usage: bool = True, finish: str = "stop") -> dict[str, Any]:

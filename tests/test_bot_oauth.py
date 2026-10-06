@@ -9,14 +9,14 @@ import pytest
 from aiohttp.test_utils import TestClient, TestServer
 from pydantic import SecretStr
 
-from simpread.config import Settings
-from simpread.domain import normalize_worker_result
-from simpread.integrations.notion import NotionError, NotionStore
-from simpread.integrations.openai import ActionPlan, Executor
-from simpread.integrations.openai.schemas import Action
-from simpread.oauth.server import OAuthServer
-from simpread.telegram.app import App
-from simpread.worker import PreparedArticle, WorkerError
+from nomodo.config import Settings
+from nomodo.domain import normalize_worker_result
+from nomodo.integrations.notion import NotionError, NotionStore
+from nomodo.integrations.openai import ActionPlan, Executor
+from nomodo.integrations.openai.schemas import Action
+from nomodo.oauth.server import OAuthServer
+from nomodo.telegram.app import App
+from nomodo.worker import PreparedArticle, WorkerError
 
 
 def settings(tmp_path: Path, **kwargs: Any) -> Settings:
@@ -89,19 +89,19 @@ def test_oauth_callback_exchanges_once_and_notifies(tmp_path: Path) -> None:
         async with TestClient(TestServer(app)) as http:
             started = await http.get("/notion/oauth/start", params={"state": state}, allow_redirects=False)
             assert started.status == 302
-            cookie = started.cookies["simpread_oauth"]
+            cookie = started.cookies["nomodo_oauth"]
             assert cookie["secure"] and cookie["httponly"]
             assert "code_challenge" not in started.headers["Location"]
             response = await http.get(
                 "/notion/oauth/callback",
                 params={"state": state, "code": "fixture"},
-                headers={"Cookie": "simpread_oauth=" + cookie.value},
+                headers={"Cookie": "nomodo_oauth=" + cookie.value},
             )
             assert response.status == 200
             replay = await http.get(
                 "/notion/oauth/callback",
                 params={"state": state, "code": "fixture"},
-                headers={"Cookie": "simpread_oauth=" + cookie.value},
+                headers={"Cookie": "nomodo_oauth=" + cookie.value},
             )
             assert replay.status == 400
         assert store.credential(1) == ("ntn_token", "W")
@@ -216,7 +216,7 @@ def test_http_health_uses_reader_state(tmp_path: Path) -> None:
             assert (await client.get("/health")).status == 503
             app.maintenance_task = asyncio.create_task(app.maintain())
             response = await client.get("/health")
-            assert await response.json() == {"service": "simpread", "ready": True, "maintenance": True}
+            assert await response.json() == {"service": "nomodo", "ready": True, "maintenance": True}
             app.maintenance_task.cancel()
             await asyncio.gather(app.maintenance_task, return_exceptions=True)
             assert (await client.get("/health")).status == 503

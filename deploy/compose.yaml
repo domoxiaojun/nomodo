@@ -1,7 +1,8 @@
-name: simpread-tgbot
+name: nomodo
 services:
   worker:
-    image: simpread-worker:f4b704b
+    container_name: nomodo-worker
+    image: nomodo-worker:f4b704b
     build:
       context: https://github.com/domoxiaojun/parse_hub_bot.git#f4b704b2f539d453ab64d9326cd26991eb2f18f0
       dockerfile: deploy/Dockerfile
@@ -28,11 +29,11 @@ services:
     depends_on:
       worker:
         condition: service_healthy
-    image: simpread-tgbot:${READER_IMAGE_TAG:-local}
+    image: nomodo:${READER_IMAGE_TAG:-local}
     build:
       context: ..
       dockerfile: deploy/Dockerfile
-    command: ["python", "-m", "simpread"]
+    command: ["python", "-m", "nomodo"]
     restart: unless-stopped
     init: true
     stop_grace_period: 30s
@@ -52,7 +53,7 @@ services:
     ports:
       - "127.0.0.1:${READER_HTTP_PORT:-8090}:8090"
     healthcheck:
-      test: ["CMD", "python", "-m", "simpread.healthcheck"]
+      test: ["CMD", "python", "-m", "nomodo.healthcheck"]
       interval: 30s
       timeout: 10s
       start_period: 20s

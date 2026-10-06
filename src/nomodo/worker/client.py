@@ -19,9 +19,9 @@ from urllib.parse import urlsplit
 import httpx
 from parsehub import ParseHub
 
-from simpread.domain import Article, normalize_worker_result
-from simpread.domain.normalize import public_result
-from simpread.domain.urls import normalize_share_url, platform_host, safe_url
+from nomodo.domain import Article, normalize_worker_result
+from nomodo.domain.normalize import public_result
+from nomodo.domain.urls import normalize_share_url, platform_host, safe_url
 
 
 class WorkerError(RuntimeError):

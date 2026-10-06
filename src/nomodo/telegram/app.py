@@ -17,16 +17,16 @@ from pyrogram.errors import RPCError
 from pyrogram.handlers import CallbackQueryHandler, MessageHandler
 from pyrogram.types import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, LinkPreviewOptions
 
-from simpread.config import Settings
-from simpread.domain import Article
-from simpread.integrations.notion import WORKSPACE, NotionError, NotionService, NotionStore
-from simpread.integrations.notion.client import notion_id
-from simpread.integrations.openai import ActionPlan, Executor, LLMError, ResponsesClient
-from simpread.integrations.openai.client import sanitize
-from simpread.integrations.openai.reader import ReaderService, credential, save_credential
-from simpread.oauth.server import OAuthServer
-from simpread.storage import PendingStore
-from simpread.worker import WorkerClient, WorkerError
+from nomodo.config import Settings
+from nomodo.domain import Article
+from nomodo.integrations.notion import WORKSPACE, NotionError, NotionService, NotionStore
+from nomodo.integrations.notion.client import notion_id
+from nomodo.integrations.openai import ActionPlan, Executor, LLMError, ResponsesClient
+from nomodo.integrations.openai.client import sanitize
+from nomodo.integrations.openai.reader import ReaderService, credential, save_credential
+from nomodo.oauth.server import OAuthServer
+from nomodo.storage import PendingStore
+from nomodo.worker import WorkerClient, WorkerError
 
 from .callbacks import make_callback, message_chunks, parse_callback, preview, truncate
 from .guidance import ERRORS, HELP
@@ -345,12 +345,12 @@ class App:
             chosen = next((t for t in targets if t.get("default")), None)
             notion = ("已连接 · " + (chosen["title"] or "已选保存位置") if chosen else
                       "已连接 · 待选择保存位置" if credential else "尚未授权" if self.oauth else "管理员尚未配置")
-            text = ("阅读助手\n\n发送一个文章或视频链接，开始解析。\n"
+            text = ("nomodo\n\n发送一个文章或视频链接，开始解析。\n"
                     "结果中可直接阅读、查看媒体、生成摘要或导出全文。\n\n"
                     f"AI：{ai}\nNotion：{notion}\n"
                     f"文章与按钮有效期约 {self.settings.reader_pending_ttl // 60} 分钟。")
         if not private(message):
-            text = "阅读助手\n\n在群内发送链接即可解析和导出。\nAI、个人设置和 Notion 保存请私聊机器人。"
+            text = "nomodo\n\n在群内发送链接即可解析和导出。\nAI、个人设置和 Notion 保存请私聊机器人。"
         markup = menu(user_id)
         latest = self.current_key(user_id, message.chat.id)
         if latest and private(message):
@@ -1109,7 +1109,7 @@ class App:
             if user_id and private(message):
                 await reply(
                     message,
-                    f"欢迎使用阅读助手。你的 Telegram 用户 ID：{user_id}\n"
+                    f"欢迎使用 nomodo。你的 Telegram 用户 ID：{user_id}\n"
                     "请将此 ID 提供给管理员，加入白名单后即可发送链接解析和导出文章。\n"
                     "无需注册账号；/id 可随时查看自己的 ID。",
                 )
@@ -1664,7 +1664,7 @@ class App:
                 self.bot and self.bot.is_initialized and self.bot.is_connected and maintaining and not self.stopping
             )
             return web.json_response(
-                {"service": "simpread", "ready": ready, "maintenance": maintaining}, status=200 if ready else 503
+                {"service": "nomodo", "ready": ready, "maintenance": maintaining}, status=200 if ready else 503
             )
 
         app.router.add_get("/health", health)

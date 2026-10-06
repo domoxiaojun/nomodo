@@ -3,8 +3,8 @@ from pathlib import Path
 
 import pytest
 
-from simpread.config import Settings
-from simpread.integrations.openai import ResponsesClient
+from nomodo.config import Settings
+from nomodo.integrations.openai import ResponsesClient
 
 
 def test_endpoint_from_env_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

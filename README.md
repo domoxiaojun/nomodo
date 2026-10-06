@@ -1,6 +1,6 @@
-# nomodo · 阅读助手
+# nomodo
 
-独立项目，路径为 `/Users/kkl/Documents/claude/simpread_tgbot`。所有代码位于 `src/simpread/`，不导入、不复制或修改 `parse_hub_bot` 源码。部署包含 Reader 和专用 Worker 两个容器，通过内部 HTTP 通信。
+独立项目，路径为 `/Users/kkl/Documents/claude/simpread_tgbot`。所有代码位于 `src/nomodo/`，不导入、不复制或修改 `parse_hub_bot` 源码。部署包含 Reader 和专用 Worker 两个容器，通过内部 HTTP 通信。
 
 ```text
 Telegram → 本地平台预检 + Worker capabilities → Worker prepare job
@@ -15,7 +15,7 @@ Telegram → 本地平台预检 + Worker capabilities → Worker prepare job
 uv sync --frozen
 cp .env.example .env
 # 编辑 .env；填写 Telegram 专用 Token、API ID/Hash、白名单和 Worker 地址/密钥。
-uv run python -m simpread
+uv run python -m nomodo
 ```
 
 本地运行时，`PARSEHUB_WORKER_URL` 指向实际可访问的 Worker，例如 `http://127.0.0.1:8080`。Compose 中的 `127.0.0.1` 指向 Reader 容器自身；网络配置见 [部署说明](deploy/README.md)。

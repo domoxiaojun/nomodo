@@ -7,11 +7,11 @@ from uuid import uuid4
 
 import pytest
 
-from simpread.domain import normalize_worker_result
-from simpread.integrations.notion.blocks import article_blocks, text_blocks
-from simpread.integrations.notion.client import NotionError
-from simpread.integrations.notion.fingerprint import fingerprint
-from simpread.integrations.notion.tree import operations, recover_tree
+from nomodo.domain import normalize_worker_result
+from nomodo.integrations.notion.blocks import article_blocks, text_blocks
+from nomodo.integrations.notion.client import NotionError
+from nomodo.integrations.notion.fingerprint import fingerprint
+from nomodo.integrations.notion.tree import operations, recover_tree
 
 
 def article(html: str) -> Any:

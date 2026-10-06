@@ -11,8 +11,8 @@ from urllib.parse import urlencode, urlsplit
 
 from aiohttp import web
 
-from simpread.config import Settings
-from simpread.integrations.notion import NotionClient, NotionStore
+from nomodo.config import Settings
+from nomodo.integrations.notion import NotionClient, NotionStore
 
 
 class OAuthServer:
@@ -38,7 +38,7 @@ main{{max-width:480px;margin:12vh auto;padding:32px;background:white;border-radi
 small{{color:#5d6e7e}}h1{{font-size:26px;margin:8px 0}}a{{display:block;padding:12px 18px;
 border-radius:10px;background:#176b58;color:white;text-align:center;text-decoration:none}}
 @media(max-width:540px){{main{{margin:10vh 16px;padding:24px}}}}</style></head>
-<body><main><small>nomodo · 阅读助手</small><h1>{escape(title)}</h1>
+<body><main><small>nomodo</small><h1>{escape(title)}</h1>
 <p>{escape(detail)}</p>{button}<p><small>可以关闭此页，返回机器人继续操作。</small></p></main></body></html>'''
         return web.Response(text=body, status=status, content_type="text/html", headers={
             "Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "X-Content-Type-Options": "nosniff",
@@ -71,7 +71,7 @@ border-radius:10px;background:#176b58;color:white;text-align:center;text-decorat
                     .decode(),
                 )
             response = web.HTTPFound("https://api.notion.com/v1/oauth/authorize?" + urlencode(params))
-            response.set_cookie("simpread_oauth", browser, max_age=600, httponly=True, secure=True, samesite="Lax")
+            response.set_cookie("nomodo_oauth", browser, max_age=600, httponly=True, secure=True, samesite="Lax")
             response.headers["Referrer-Policy"] = "no-referrer"
             raise response
 
@@ -79,7 +79,7 @@ border-radius:10px;background:#176b58;color:white;text-align:center;text-decorat
             if request.query.get("error"):
                 return self.page("授权尚未完成", "没有连接到 Notion。你可以返回机器人重新授权，其他功能仍可使用。", 400)
             state, code = request.query.get("state", ""), request.query.get("code", "")
-            binding = self.store.oauth_consume(state, request.cookies.get("simpread_oauth", "")) if code else None
+            binding = self.store.oauth_consume(state, request.cookies.get("nomodo_oauth", "")) if code else None
             if binding is None or binding[0] not in self.settings.allowed_users:
                 return self.page("授权无效或已过期",
                                  "请在同一浏览器完成授权；需要重试时，从机器人获取新的授权链接。", 400)
@@ -109,7 +109,7 @@ border-radius:10px;background:#176b58;color:white;text-align:center;text-decorat
                     pass  # A notification failure does not undo a completed authorization.
             response = self.page("Notion 已连接",
                                  "下一步：返回机器人选择保存位置。若你刚才在保存文章，可以继续完成保存确认。")
-            response.del_cookie("simpread_oauth")
+            response.del_cookie("nomodo_oauth")
             return response
 
         path = urlsplit(self.settings.notion_oauth_redirect_uri).path

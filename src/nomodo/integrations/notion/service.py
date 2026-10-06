@@ -7,8 +7,8 @@ import hashlib
 from collections.abc import Callable
 from typing import Any
 
-from simpread.domain import Article
-from simpread.worker import WorkerClient
+from nomodo.domain import Article
+from nomodo.worker import WorkerClient
 
 from .blocks import article_blocks, batches, mapping, properties, text_blocks
 from .client import NotionClient, NotionError, notion_id

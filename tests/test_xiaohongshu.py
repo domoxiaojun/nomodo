@@ -9,13 +9,13 @@ import httpx
 import pytest
 from test_bot_oauth import message
 
-from simpread.domain import normalize_worker_result
-from simpread.integrations.notion.blocks import article_blocks
-from simpread.telegram.app import MESSAGES
-from simpread.telegram.input import message_urls
-from simpread.telegram.media import DeliveryUncertain, prepare_media, send_preview
-from simpread.telegram.ui import buttons
-from simpread.worker import WorkerClient, WorkerError, extract_urls
+from nomodo.domain import normalize_worker_result
+from nomodo.integrations.notion.blocks import article_blocks
+from nomodo.telegram.app import MESSAGES
+from nomodo.telegram.input import message_urls
+from nomodo.telegram.media import DeliveryUncertain, prepare_media, send_preview
+from nomodo.telegram.ui import buttons
+from nomodo.worker import WorkerClient, WorkerError, extract_urls
 
 NOTE = "https://www.xiaohongshu.com/explore/0123456789abcdef01234567"
 SIGNED = NOTE + "?xsec_token=fixture%2B%2F%3D&xsec_source=pc_share"

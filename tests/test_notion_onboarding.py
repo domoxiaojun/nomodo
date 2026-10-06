@@ -5,7 +5,7 @@ from urllib.parse import parse_qs, urlsplit
 from pydantic import SecretStr
 from test_bot_oauth import message, settings
 
-from simpread.telegram.app import App
+from nomodo.telegram.app import App
 
 
 def test_home_has_direct_owner_bound_authorization_and_next_step(tmp_path: Path) -> None:

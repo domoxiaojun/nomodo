@@ -6,9 +6,9 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from simpread.domain import Article
-from simpread.domain.models import Block
-from simpread.domain.render import article_to_html, article_to_markdown
+from nomodo.domain import Article
+from nomodo.domain.models import Block
+from nomodo.domain.render import article_to_html, article_to_markdown
 
 from .client import LLMError, redact
 from .schemas import Citation, Transformation

@@ -10,15 +10,15 @@ import pytest
 from PIL import Image
 from test_bot_oauth import message
 
-from simpread.domain import normalize_worker_result
-from simpread.domain.models import Article
-from simpread.integrations.notion.blocks import article_blocks
-from simpread.integrations.notion.client import NotionError
-from simpread.integrations.notion.media import upload_media
-from simpread.integrations.notion.tree import recover_tree, write_tree
-from simpread.telegram.media import send_preview
-from simpread.telegram.ui import buttons
-from simpread.worker import WorkerClient
+from nomodo.domain import normalize_worker_result
+from nomodo.domain.models import Article
+from nomodo.integrations.notion.blocks import article_blocks
+from nomodo.integrations.notion.client import NotionError
+from nomodo.integrations.notion.media import upload_media
+from nomodo.integrations.notion.tree import recover_tree, write_tree
+from nomodo.telegram.media import send_preview
+from nomodo.telegram.ui import buttons
+from nomodo.worker import WorkerClient
 
 
 def test_rich_document_roundtrip_and_media_provenance() -> None:

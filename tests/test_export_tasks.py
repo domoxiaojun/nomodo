@@ -11,8 +11,8 @@ from pydantic import SecretStr
 from test_bot_oauth import message, settings
 from test_notion import PAGE, TARGET, Worker, article
 
-from simpread.integrations.notion import NotionClient, NotionError, NotionService, NotionStore
-from simpread.telegram.app import App
+from nomodo.integrations.notion import NotionClient, NotionError, NotionService, NotionStore
+from nomodo.telegram.app import App
 
 
 def test_unknown_export_recovery_uses_durable_snapshot_and_original_target(tmp_path: Path) -> None:
