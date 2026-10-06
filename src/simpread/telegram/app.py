@@ -632,10 +632,20 @@ class App:
         await progress.update(notice, done=True, markup=InlineKeyboardMarkup(saved_rows))
         # The article keeps its media lease so the user can retry or save to another target.
 
+    async def clear_saved_markers(self, user_id: int, content_hash: str, target_id: str) -> None:
+        drop = getattr(self.notion, "drop_checkpoints", None)
+        if drop is None:
+            return
+        try:
+            await drop(user_id, content_hash, target_id)
+        except NotionError:
+            return
+
     async def notion_save_choice(self, user_id: int, message: Any, article: Article) -> None:
         title = article.title or "无标题"
         saved = sent_notion_export(self.secrets, user_id, article.content_hash, WORKSPACE)
         if saved:
+            await self.clear_saved_markers(user_id, article.content_hash, WORKSPACE)
             text = (
                 f"这篇已经有独立页面\n\n文章：{title}\n"
                 "可以打开已有页面，再新建一篇独立页面，或放到已有页面下面。"
@@ -660,6 +670,7 @@ class App:
         saved = sent_notion_export(self.secrets, user_id, article.content_hash, WORKSPACE)
         self.pending.preferences(user_id, {"notion_resume": None})
         if saved:
+            await self.clear_saved_markers(user_id, article.content_hash, WORKSPACE)
             description = (
                 f"这篇已经保存过\n\n文章：{article.title or '无标题'}\n"
                 "可以打开已有的独立页面，或再新建一篇。原来的页面会保留。"
@@ -712,6 +723,7 @@ class App:
         saved = sent_notion_export(self.secrets, user_id, article.content_hash, target["id"])
         saved_url = str((saved or {}).get("url") or "")
         if saved and saved_url.startswith("https://"):
+            await self.clear_saved_markers(user_id, article.content_hash, target["id"])
             description = (
                 f"这篇已经保存过\n\n文章：{article.title or '无标题'}\n位置：{place}\n"
                 "可以打开已有页面，或再新建一篇。原来的页面会保留。"
@@ -916,7 +928,7 @@ class App:
             await self.file(message, article, "html")
 
         async def summary(language: str) -> None:
-            await self.enhance(user_id, message, key, "summary", language)
+            await self.reading(user_id, message, key, "summary", language)
 
         async def translate(language: str) -> None:
             await self.enhance(user_id, message, key, "translate", language)
@@ -968,14 +980,17 @@ class App:
         self, user_id: int, message: Any, key: str, operation: str, language: str | None = None,
         *, mode: str = "brief", question: str = "", refresh: bool = False, retry: str | None = None,
     ) -> None:
-        self.selected(user_id, message, key)
+        _, article, _ = self.selected(user_id, message, key)
         language = language or self.pending.preferences(user_id)["language"]
         if not re.fullmatch(r"[\w-]{1,40}", language):
             raise ValueError("invalid_language")
         progress = Progress(message, user_id, self.activities.get(user_id))
 
         async def report(text: str) -> None:
-            await progress.update(text)
+            if operation == "summary":
+                await progress.update(f"正在阅读并生成摘要…\n{article.title or '当前文章'}")
+            else:
+                await progress.update(text)
 
         job = await self.reader.run(
             user_id, message.chat.id, key, operation, language=language, mode=mode, question=question,
@@ -988,6 +1003,15 @@ class App:
     async def ai_result(self, uid: int, message: Any, job: dict[str, Any]) -> None:
         self.pending.ai.get(uid, message.chat.id, job["id"])
         cost, uncertain = self.pending.ai.cost(job["id"])
+        if job["status"] == "completed" and job["spec"]["operation"] == "summary":
+            article_id = str(job.get("article_id") or "")
+            rows = [[("重新生成", f"ai:{job['id']}:regenerate"), ("查看依据", f"ai:{job['id']}:sources")]]
+            if article_id:
+                rows.append([("查看原文", make_callback(article_id, "open"))])
+            await message.reply_rich(
+                ai_rich("文章摘要", str(job["result"].get("markdown") or "")), reply_markup=buttons(rows)
+            )
+            return
         if job["status"] != "completed":
             await reply(
                 message,
@@ -1183,10 +1207,8 @@ class App:
                         await self.settings_command(user_id, message, tokens[1:])
                     elif command == "/summary":
                         key, _, _ = self.selected(user_id, message)
-                        if len(tokens) > 1:
-                            await self.reading(user_id, message, key, "summary", mode=tokens[1])
-                        else:
-                            await self.enhance(user_id, message, key, "summary")
+                        mode = tokens[1] if len(tokens) > 1 else "brief"
+                        await self.reading(user_id, message, key, "summary", mode=mode)
                     elif command == "/translate":
                         key, _, _ = self.selected(user_id, message)
                         await self.enhance(user_id, message, key, "translate",
@@ -1590,6 +1612,8 @@ class App:
                                         "移除这篇文章？\n它将不再出现在最近列表中，之后可以重新发送链接解析。")
                 elif action == "save":
                     await self.request_save(uid, message, key)
+                elif action in {"summary", "regen_summary"}:
+                    await self.reading(uid, message, key, "summary", refresh=action == "regen_summary")
                 else:
                     await self.enhance(uid, message, key, action.removeprefix("regen_"),
                                        regenerate=action.startswith("regen_"))

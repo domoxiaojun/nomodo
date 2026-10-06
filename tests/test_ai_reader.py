@@ -111,6 +111,8 @@ def test_protocol_cache_metering_and_refresh(tmp_path: Path, mode: str) -> None:
         key = app.pending.put(1, 1, fixture_article(), (), {})
         result = await app.reader.run(1, 1, key, "summary")
         assert result["status"] == "completed" and len(generator.calls) == 1
+        assert result["result"]["markdown"] == "Summary.\n\n- Key point"
+        assert "原文第" not in result["result"]["markdown"] and result["result"]["citations"]
         assert (await app.reader.run(1, 1, key, "summary"))["id"] == result["id"]
         assert len(generator.calls) == 1
         cost, uncertain = app.pending.ai.cost(result["id"])

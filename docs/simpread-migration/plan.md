@@ -1,12 +1,12 @@
-# SimpRead 能力移植与完善计划
+# 原浏览器扩展能力移植与完善计划
 
 日期：2026-10-02。
 
-本轮交付为源码分析和实施方案；下列实施项尚未完成。目标为独立 simpread_tgbot；SimpRead 扩展和 parse_hub_bot 保持只读。保留现有未提交修改，不覆盖根目录已有 plan.md。
+本轮交付为源码分析和实施方案；下列实施项尚未完成。目标为独立 simpread_tgbot；原浏览器扩展和 parse_hub_bot 保持只读。保留现有未提交修改，不覆盖根目录已有 plan.md。
 
 ## 分析进度
 
-- [x] ✅ 检查 SimpRead 的 PureRead 调用、Markdown 转换及旧 Notion 导出入口。
+- [x] ✅ 检查原浏览器扩展的 PureRead 调用、Markdown 转换及旧 Notion 导出入口。
 - [x] ✅ 检查 Reader 的 Worker 接口、Article/Block、Markdown/HTML 转换、Notion blocks 和持久化关联。
 - [x] ✅ 明确移植边界、阶段依赖、最小验证和未验证事项。
 
@@ -48,7 +48,7 @@ URL → 路由 → 平台 Worker 或独立网页提取器 → 统一文档树 �
 - [ ] 首批覆盖静态新闻、博客和技术文档；登录态、验证码与必须执行 JavaScript 的页面明确提示。仅有真实样例需求时评估隔离浏览器后备。
 - [ ] 最小验证：本地固定 HTML 对照正文/噪声/元数据/媒体，再用选定公开 URL 做少量现场验收；记录站点、日期与失败原因。
 
-## 阶段四：SimpRead 规则迁移与必要优化
+## 阶段四：扩展规则迁移与必要优化
 
 - [ ] 核查 PureRead、规则和 vendored 组件各自许可证、来源及版本，建立可复现来源清单后再决定直接移植的范围。
 - [ ] 盘点规则中的 URL 匹配、CSS selector、排除节点及脚本依赖；优先迁移声明式部分，禁止执行下载规则携带的任意 JavaScript。

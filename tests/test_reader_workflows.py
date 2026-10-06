@@ -74,11 +74,11 @@ def test_select_command_controls_later_summary(tmp_path: Path) -> None:
         app = App(settings(tmp_path))
         first = app.pending.put(1, 1, article(), (), {})
         app.pending.put(1, 1, article("second"), (), {})
-        cast(Any, app).enhance = AsyncMock()
+        cast(Any, app).reading = AsyncMock()
         await app.dispatch(None, message(text=f"/select {first}"))
         msg = message(text="/summary")
         await app.dispatch(None, msg)
-        cast(Any, app.enhance).assert_awaited_once_with(1, msg, first, "summary")
+        cast(Any, app.reading).assert_awaited_once_with(1, msg, first, "summary", mode="brief")
         await app.close()
 
     asyncio.run(run())

@@ -141,6 +141,13 @@ class NotionClient:
     async def append(self, page_id: str, children: list[dict[str, Any]]) -> dict[str, Any]:
         return await self.request("PATCH", f"blocks/{notion_id(page_id)}/children", json={"children": children})
 
+    async def archive(self, block_id: str) -> None:
+        try:
+            await self.request("DELETE", f"blocks/{notion_id(block_id)}")
+        except NotionError as error:
+            if error.status != 404:
+                raise
+
     async def add_properties(self, target_id: str, properties: dict[str, Any]) -> None:
         await self.request("PATCH", f"data_sources/{notion_id(target_id)}", json={"properties": properties})
 

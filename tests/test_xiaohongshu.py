@@ -24,7 +24,11 @@ SIGNED = NOTE + "?xsec_token=fixture%2B%2F%3D&xsec_source=pc_share"
 def payload(count: int = 1) -> dict[str, Any]:
     return {
         "platform": "xhs", "sourceUrl": SIGNED, "canonicalUrl": NOTE,
-        "title": "小红书笔记", "contentFormat": "plain", "plainContent": "第一步：准备食材\n第二步：烹饪\n#家常菜 😀",
+        "title": "小红书笔记", "contentFormat": "plain",
+        "plainContent": (
+            "小红书笔记\n第一步：准备食材\n第二步：烹饪 #家常菜 😀\n"
+            "#下饭菜\n#家常菜[话题]#\n#家常菜 😀\n复制后打开【小红书】查看笔记！"
+        ),
         "leaseId": "lease", "media": [
             {"mediaId": f"p{i}", "type": "photo", "mimeType": "image/jpeg", "filename": f"{i}.jpg", "sizeBytes": 3}
             for i in range(count)
@@ -95,16 +99,26 @@ def test_note_newlines_tags_and_complete_live_photo_order_in_exports() -> None:
     value = payload(12)
     value["media"][3].update(type="live_photo", videoMediaId="motion", videoMimeType="video/mp4")
     article = normalize_worker_result(value)
-    assert "准备食材  \n第二步" in article.markdown
-    assert "准备食材<br/>第二步" in article.html
-    assert "#家常菜 😀" in article.blocks[0].text
+    assert [block.text for block in article.blocks if block.type == "paragraph"] == [
+        "第一步：准备食材", "第二步：烹饪 #家常菜 😀",
+    ]
+    assert "#下饭菜" not in article.markdown and "复制后打开" not in article.markdown
+    assert "[话题]" not in article.markdown
     expected = ["p0", "p1", "p2", "p3", "motion", *[f"p{i}" for i in range(4, 12)]]
     assert [b.media_id for b in article.blocks if b.media_id] == expected
     assert article.markdown.index("3.jpg") < article.markdown.index("video：附件") < article.markdown.index("4.jpg")
     media = {mid: {"type": "image" if mid != "motion" else "video", "fixture_id": mid} for mid in expected}
     notion = article_blocks(article, media)
     assert [b["fixture_id"] for b in notion if "fixture_id" in b] == expected
-    assert notion[0]["paragraph"]["rich_text"][0]["text"]["content"] == value["plainContent"]
+    assert notion[0]["paragraph"]["rich_text"][0]["text"]["content"] == "第一步：准备食材"
+
+
+def test_other_platforms_keep_tags_and_single_newlines() -> None:
+    raw = payload()
+    raw["platform"] = "wechat"
+    raw["plainContent"] = "第一行\n#标签\n复制后打开小红书"
+    article = normalize_worker_result(raw)
+    assert article.blocks[0].text == raw["plainContent"]
 
 
 @pytest.mark.parametrize("fail_download", [False, True])

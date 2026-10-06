@@ -306,9 +306,11 @@ def test_saved_article_can_open_the_old_page_or_create_another(tmp_path: Path) -
         app.secrets.save_export(1, stored[0].content_hash, target, {
             "status": "sent", "url": "https://www.notion.so/old", "page_id": "22222222-2222-4222-8222-222222222222",
         })
+        drop = AsyncMock()
         app.notion = cast(Any, SimpleNamespace(
             target=lambda *_args: {"id": target, "title": "父页面", "kind": "page"},
             schema=AsyncMock(return_value={}),
+            drop_checkpoints=drop,
         ))
         msg = message()
         try:
@@ -318,6 +320,7 @@ def test_saved_article_can_open_the_old_page_or_create_another(tmp_path: Path) -
             assert "已经保存过" in text and "再新建一篇" in text
             assert keyboard[0][0].url == "https://www.notion.so/old"
             assert keyboard[1][0].text == "新建一篇"
+            drop.assert_awaited_once_with(1, stored[0].content_hash, target)
         finally:
             await app.close()
 

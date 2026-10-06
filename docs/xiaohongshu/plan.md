@@ -1,6 +1,6 @@
 # 小红书支持完善计划
 
-日期：2026-10-02。范围：独立 Reader 与 ParseHub Worker 的 ext 扩展层；参考 SimpRead 保持只读，不修改 site-packages 或上游原始目录。保留两仓库既有未提交改动。
+日期：2026-10-02。范围：独立 Reader 与 ParseHub Worker 的 ext 扩展层；参考原浏览器扩展，保持只读，不修改 site-packages 或上游原始目录。保留两仓库既有未提交改动。
 
 - [x] ✅ 核对现有 Worker、ParseHub 2.2.4 小红书解析器及 Reader 的输入、媒体、导出和错误处理。
 - [x] ✅ Worker 视频流兼容：缺少 h264、其他流名称、无有效流；通过现有 hooks 安装，保留原请求/认证/下载流程。

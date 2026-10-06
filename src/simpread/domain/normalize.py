@@ -1,5 +1,6 @@
 """Explicit public allowlist: no Worker filesystem/credential metadata enters state."""
 
+import re
 from typing import Any, cast
 
 from .blocks import parse_html, parse_markdown
@@ -7,6 +8,37 @@ from .media import media_kind
 from .models import Article, Block, MediaAsset, SourceInfo
 from .render import article_to_html, article_to_markdown
 from .urls import safe_url
+
+_TOPIC = re.compile(r"#([^#\[\]\n]+?)\[话题]#")
+_TAG = re.compile(r"#[^\s#]+(?:\[话题])?#?")
+_BOILERPLATE = ("复制后打开", "复制这段描述", "打开小红书", "打开【小红书】")
+
+
+def _hashtag_only(line: str) -> bool:
+    if "#" not in line:
+        return False
+    rest = _TAG.sub("", line).replace("[话题]", "")
+    rest = re.sub(r"[\s#]+", "", rest)
+    return rest == "" or all(not char.isalnum() and not "\u4e00" <= char <= "\u9fff" for char in rest)
+
+
+def _boilerplate(line: str) -> bool:
+    compact = re.sub(r"\s+", "", line)
+    return any(phrase in compact for phrase in _BOILERPLATE) and len(compact) <= 48
+
+
+def clean_xiaohongshu(text: str, title: str) -> str:
+    """Drop share boilerplate and tag-only lines. Keep a tag that sits inside a sentence."""
+    kept: list[str] = []
+    for line in _TOPIC.sub(r"#\1", text).splitlines():
+        stripped = line.strip()
+        if not stripped or _hashtag_only(stripped) or _boilerplate(stripped):
+            continue
+        kept.append(stripped)
+    if len(kept) > 1 and kept[0] == title.strip():
+        kept = kept[1:]
+    return "\n\n".join(kept)
+
 
 PUBLIC_FIELDS = {
     "sourceUrl",
@@ -59,6 +91,15 @@ def normalize_worker_result(result: dict[str, Any]) -> Article:
         raise ValueError("invalid_source")
     canonical = safe_url(result.get("canonicalUrl")) or source
     text = str(result.get("markdownContent") or result.get("plainContent") or result.get("content") or "")
+    plain = not (
+        result.get("markdownContent")
+        or result.get("contentFormat") in {"markdown", "html"}
+        or result.get("htmlContent")
+    )
+    if str(result.get("platform") or "") == "xhs" and plain:
+        text = clean_xiaohongshu(text, str(result.get("title") or ""))
+    elif str(result.get("platform") or "") == "xhs":
+        text = _TOPIC.sub(r"#\1", text)
     if result.get("markdownContent") or result.get("contentFormat") == "markdown":
         blocks = parse_markdown(text, canonical)
     elif result.get("htmlContent"):

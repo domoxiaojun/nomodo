@@ -80,6 +80,10 @@ def test_long_export_resume_no_duplicate_and_isolation(tmp_path: Path) -> None:
 
 
 NEW = "33333333-3333-4333-8333-333333333333"
+CONTENT_BLOCK = "44444444-4444-4444-8444-444444444444"
+MARKER_BLOCK = "55555555-5555-4555-8555-555555555555"
+BATCH_BLOCK = "66666666-6666-4666-8666-666666666666"
+LEGACY_BLOCK = "77777777-7777-4777-8777-777777777777"
 
 
 def note() -> Any:
@@ -192,6 +196,10 @@ def test_workspace_page_is_created_without_a_parent(tmp_path: Path) -> None:
             return httpx.Response(200, json={"id": PAGE, "url": "https://www.notion.so/standalone"})
         if req.method == "GET" and path.endswith("/pages/" + PAGE):
             return httpx.Response(200, json={"id": PAGE, "url": "https://www.notion.so/standalone"})
+        if req.method == "GET" and "/blocks/" in path and path.endswith("/children"):
+            return httpx.Response(200, json={"results": [], "has_more": False})
+        if req.method == "DELETE" and "/blocks/" in path:
+            return httpx.Response(200, json={"object": "block", "archived": True})
         if req.method == "PATCH":
             return httpx.Response(200, json={})
         raise AssertionError(f"{req.method} {path}")
@@ -207,6 +215,88 @@ def test_workspace_page_is_created_without_a_parent(tmp_path: Path) -> None:
             assert stored["status"] == "sent" and stored["page_id"] == PAGE
             again = await service.export_page(1, value, WORKSPACE)
             assert again["reused"] is True and len(parents) == 1
+        finally:
+            store.close()
+
+    asyncio.run(run())
+
+
+def test_finished_page_removes_checkpoint_lines(tmp_path: Path) -> None:
+    deleted: list[str] = []
+    marker = ""
+    creates = 0
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        nonlocal marker, creates
+        path = req.url.path.rstrip("/")
+        if req.method == "POST" and path.endswith("/pages"):
+            body = json.loads(req.content)
+            marker = body["children"][0]["paragraph"]["rich_text"][0]["text"]["content"]
+            assert "simpread" not in marker.lower()
+            creates += 1
+            return httpx.Response(200, json={"id": PAGE, "url": "https://www.notion.so/saved"})
+        if req.method == "GET" and "/blocks/" in path and path.endswith("/children"):
+            return httpx.Response(200, json={"results": [
+                {"id": MARKER_BLOCK, "type": "paragraph", "paragraph": {"rich_text": [{"plain_text": marker}]}},
+                {"id": CONTENT_BLOCK, "type": "paragraph", "paragraph": {"rich_text": [{"plain_text": "hello"}]}},
+                {"id": BATCH_BLOCK, "type": "paragraph",
+                 "paragraph": {"rich_text": [{"plain_text": f"{marker} batch 0"}]}},
+            ], "has_more": False})
+        if req.method == "DELETE" and "/blocks/" in path:
+            deleted.append(path.rpartition("/")[-1])
+            return httpx.Response(200, json={"object": "block", "archived": True})
+        if req.method == "PATCH":
+            return httpx.Response(200, json={})
+        if req.method == "GET" and path.endswith(PAGE):
+            return httpx.Response(200, json={"id": PAGE, "url": "https://www.notion.so/saved"})
+        if req.method == "GET":
+            return httpx.Response(200, json={"id": TARGET})
+        raise AssertionError(f"{req.method} {path}")
+
+    async def run() -> None:
+        service, store = notion_service(tmp_path, handler)
+        value = note()
+        try:
+            saved = await service.export_page(1, value, TARGET)
+            assert saved["status"] == "sent" and creates == 1 and deleted == [MARKER_BLOCK, BATCH_BLOCK]
+            stored = store.export_status(1, value.content_hash, TARGET) or {}
+            assert "simpread" not in str(stored["marker"]).lower()
+            again = await service.export_page(1, value, TARGET)
+            assert again["reused"] is True and creates == 1
+        finally:
+            store.close()
+
+    asyncio.run(run())
+
+
+def test_reopen_removes_a_legacy_brand_checkpoint(tmp_path: Path) -> None:
+    deleted: list[str] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        path = req.url.path.rstrip("/")
+        if req.method == "GET" and "/blocks/" in path and path.endswith("/children"):
+            return httpx.Response(200, json={"results": [
+                {"id": LEGACY_BLOCK, "type": "paragraph",
+                 "paragraph": {"rich_text": [{"plain_text": "SimpRead export abc"}]}},
+                {"id": CONTENT_BLOCK, "type": "paragraph", "paragraph": {"rich_text": [{"plain_text": "hello"}]}},
+            ], "has_more": False})
+        if req.method == "GET" and path.endswith(PAGE):
+            return httpx.Response(200, json={"id": PAGE, "url": "https://www.notion.so/old"})
+        if req.method == "DELETE":
+            deleted.append(path.rpartition("/")[-1])
+            return httpx.Response(200, json={"object": "block", "archived": True})
+        raise AssertionError(f"{req.method} {path}")
+
+    async def run() -> None:
+        service, store = notion_service(tmp_path, handler)
+        value = note()
+        store.save_export(1, value.content_hash, TARGET, {
+            "status": "sent", "page_id": PAGE, "url": "https://www.notion.so/old",
+            "marker": "SimpRead export abc", "in_flight": False,
+        })
+        try:
+            again = await service.export_page(1, value, TARGET)
+            assert again["reused"] is True and deleted == [LEGACY_BLOCK]
         finally:
             store.close()
 

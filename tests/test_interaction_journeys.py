@@ -207,16 +207,18 @@ def test_ai_retry_button_and_unknown_command_have_next_steps(tmp_path: Path) -> 
     async def run() -> None:
         app = App(settings(tmp_path))
         key = app.pending.put(1, 1, article(), (), {})
-        llm = SimpleNamespace(enhance=AsyncMock(side_effect=[LLMError('llm_timeout'), Enhancement(summary='成功')]),
-                              close=AsyncMock())
+        llm = SimpleNamespace(enhance=AsyncMock(side_effect=[
+            LLMError('llm_timeout'), Enhancement(translated_markdown='成功'),
+        ]), close=AsyncMock())
         cast(Any, app).llm_client = lambda *_: llm
         msg = message()
         try:
-            await app.enhance(1, msg, key, 'summary')
+            await app.enhance(1, msg, key, 'translate')
             markup = msg.reply_text.return_value.edit_text.call_args.kwargs['reply_markup']
             retry = markup.inline_keyboard[0][0].callback_data
             await app.callback(None, query(1, retry))
-            assert llm.enhance.await_count == 2 and app.pending.derived(1, key)['summary'] == '成功'
+            assert llm.enhance.await_count == 2
+            assert app.pending.derived(1, key)['translated_markdown'] == '成功'
             invalid = message(text='/unknown')
             await app.dispatch(None, invalid)
             assert invalid.reply_text.call_args.kwargs['reply_markup']
