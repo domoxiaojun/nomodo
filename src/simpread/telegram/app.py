@@ -92,7 +92,9 @@ MESSAGES = {
 
 def notion_save_notice(result: dict[str, Any], *, with_url: bool = False) -> str:
     url = str(result.get("url") or "")
-    if result.get("reused"):
+    if result.get("fresh"):
+        text = "已新建一篇页面。原来的页面仍保留在 Notion。"
+    elif result.get("reused"):
         text = "这篇已经在 Notion 里，打开的是原来的页面。"
     elif result.get("recreated"):
         text = "原来的页面已经不在，已重新创建。"
@@ -390,8 +392,10 @@ class App:
 
     async def approval(self, message: Any, user_id: int, payload: dict[str, Any], description: str) -> None:
         key = self.pending.approve(user_id, message.chat.id, payload)
-        label = {"save": "确认保存", "remove": "确认移除", "recover": "确认核对",
+        label = {"save": "新建页面", "remove": "确认移除", "recover": "确认核对",
                  "disconnect_notion": "确认断开"}.get(payload.get("kind", ""), "确认执行")
+        if payload.get("force_new"):
+            label = "新建一篇"
         await reply(
             message,
             description,
@@ -558,7 +562,7 @@ class App:
         finally:
             await client.close()
 
-    async def save(self, user_id: int, message: Any, key: str, target_id: str) -> None:
+    async def save(self, user_id: int, message: Any, key: str, target_id: str, *, force_new: bool = False) -> None:
         key, article, leases = self.selected(user_id, message, key)
         if not self.notion:
             raise NotionError("authorization_required")
@@ -566,7 +570,8 @@ class App:
         await progress.update("正在保存到 Notion…\n大图或长文需要更多时间，请勿重复点击。")
         try:
             result = await self.notion.export_page(
-                user_id, article, target_id, leases=leases, derived=self.pending.derived(user_id, key)
+                user_id, article, target_id, leases=leases, derived=self.pending.derived(user_id, key),
+                force_new=force_new,
             )
         except asyncio.CancelledError:
             await progress.update("已停止等待 Notion 保存。部分写入可能已完成，"
@@ -588,10 +593,17 @@ class App:
         notice = notion_save_notice(result)
         if result.get("warnings"):
             notice += "\n部分媒体以外链或说明保留。"
-        await progress.update(notice, done=True, markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("打开 Notion 页面", url=result["url"])],
-            [InlineKeyboardButton("查看原文", callback_data=make_callback(key, "open"))],
-        ]))
+        saved_rows: list[list[InlineKeyboardButton]] = [
+            [InlineKeyboardButton("打开 Notion 页面", url=result["url"])]
+        ]
+        if result.get("reused"):
+            label, data = self.token_button(
+                user_id, message.chat.id, "新建一篇", "confirm",
+                {"kind": "save", "key": key, "target": target_id, "force_new": True},
+            )
+            saved_rows.append([InlineKeyboardButton(label, callback_data=data)])
+        saved_rows.append([InlineKeyboardButton("查看原文", callback_data=make_callback(key, "open"))])
+        await progress.update(notice, done=True, markup=InlineKeyboardMarkup(saved_rows))
         # The article keeps its media lease so the user can retry or save to another target.
 
     async def request_save(self, user_id: int, message: Any, key: str, target_id: str | None = None) -> None:
@@ -610,6 +622,24 @@ class App:
         missing = await self.notion.schema(user_id, target["id"])
         self.pending.preferences(user_id, {"notion_resume": None})
         place = target.get("title") or "未命名页面"
+        saved = self.secrets.export_status(user_id, article.content_hash, target["id"]) if self.secrets else None
+        saved_url = str((saved or {}).get("url") or "")
+        if saved and saved.get("status") == "sent" and saved_url.startswith("https://"):
+            description = (
+                f"这篇已经保存过\n\n文章：{article.title or '无标题'}\n位置：{place}\n"
+                "可以打开已有页面，或再新建一篇。原来的页面会保留。"
+            )
+            if not target.get("title"):
+                description += f"\n位置 ID：{target['id']}"
+            token = self.pending.approve(user_id, message.chat.id, {
+                "kind": "save", "key": key, "target": target["id"], "add_schema": missing, "force_new": True,
+            })
+            await reply(message, description, reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("打开已有页面", url=saved_url)],
+                [InlineKeyboardButton("新建一篇", callback_data=f"confirm:{token}"),
+                 InlineKeyboardButton("取消", callback_data=f"dismiss:{token}")],
+            ]))
+            return
         description = (
             f"确认保存到 Notion\n\n文章：{article.title or '无标题'}\n位置：{place}\n将在这个位置下新建一篇页面。"
         )
@@ -1383,7 +1413,9 @@ class App:
                         await message.edit_text("文章已从最近列表移除，不影响之前导出的文件或 Notion 页面。",
                                                 reply_markup=menu(uid))
                     elif payload["kind"] == "save":
-                        await self.save(uid, message, payload["key"], payload["target"])
+                        await self.save(
+                            uid, message, payload["key"], payload["target"], force_new=bool(payload.get("force_new"))
+                        )
                     elif payload["kind"] == "recover":
                         if not self.notion:
                             raise NotionError("authorization_required")

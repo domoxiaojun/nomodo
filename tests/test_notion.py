@@ -145,6 +145,58 @@ def test_deleted_sent_page_is_recreated_once(tmp_path: Path, gone: str) -> None:
     asyncio.run(run())
 
 
+def test_force_new_creates_another_page_beside_the_live_one(tmp_path: Path) -> None:
+    creates: list[str] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        path = req.url.path.rstrip("/")
+        if req.method == "GET" and path.endswith(PAGE):
+            return httpx.Response(200, json={"id": PAGE, "url": "https://www.notion.so/old"})
+        if req.method == "GET" and path.endswith(NEW):
+            return httpx.Response(200, json={"id": NEW, "url": "https://www.notion.so/new"})
+        if req.method == "GET":
+            return httpx.Response(200, json={"id": TARGET})
+        if req.method == "POST" and path.endswith("/pages"):
+            page_id = PAGE if not creates else NEW
+            creates.append(page_id)
+            url = "https://www.notion.so/old" if page_id == PAGE else "https://www.notion.so/new"
+            return httpx.Response(200, json={"id": page_id, "url": url})
+        return httpx.Response(200, json={})
+
+    async def run() -> None:
+        service, store = notion_service(tmp_path, handler)
+        value = note()
+        try:
+            await service.export_page(1, value, TARGET)
+            created = await service.export_page(1, value, TARGET, force_new=True)
+            stored = store.export_status(1, value.content_hash, TARGET) or {}
+            assert created["fresh"] is True and created["page_id"] == NEW and created["url"].endswith("/new")
+            assert stored["page_id"] == NEW and "fresh" not in stored
+            again = await service.export_page(1, value, TARGET)
+            assert again["reused"] is True and creates == [PAGE, NEW]
+        finally:
+            store.close()
+
+    asyncio.run(run())
+
+
+def test_force_new_does_not_bypass_an_unknown_write(tmp_path: Path) -> None:
+    def handler(req: httpx.Request) -> httpx.Response:
+        raise AssertionError(req.url.path)
+
+    async def run() -> None:
+        service, store = notion_service(tmp_path, handler)
+        value = note()
+        store.save_export(1, value.content_hash, TARGET, {"status": "unknown", "in_flight": True, "page_id": PAGE})
+        try:
+            with pytest.raises(NotionError, match="write_outcome_unknown"):
+                await service.export_page(1, value, TARGET, force_new=True)
+        finally:
+            store.close()
+
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize("failure", ["status", "network"])
 def test_page_check_failure_does_not_create_another_page(tmp_path: Path, failure: str) -> None:
     creates = 0

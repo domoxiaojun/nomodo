@@ -6,6 +6,7 @@ from typing import Any, cast
 from unittest.mock import AsyncMock
 
 import pytest
+from pydantic import SecretStr
 from pyrogram import enums, raw, types
 from pyrogram.errors import BadRequest
 from test_bot_oauth import message, settings
@@ -261,8 +262,10 @@ def test_save_notice_distinguishes_existing_and_recreated_pages(tmp_path: Path, 
         try:
             await app.save(1, msg, key, "target")
             text = msg.reply_text.return_value.edit_text.call_args.args[0]
-            url = msg.reply_text.return_value.edit_text.call_args.kwargs["reply_markup"].inline_keyboard[0][0].url
-            assert expected in text and url == "https://www.notion.so/page"
+            keyboard = msg.reply_text.return_value.edit_text.call_args.kwargs["reply_markup"].inline_keyboard
+            labels = [button.text for row in keyboard for button in row]
+            assert expected in text and keyboard[0][0].url == "https://www.notion.so/page"
+            assert ("新建一篇" in labels) is (flag == "reused")
         finally:
             await app.close()
 
@@ -283,6 +286,37 @@ def test_save_confirmation_says_a_new_child_page_will_be_created(tmp_path: Path)
             text = msg.reply_text.call_args.args[0]
             assert "未命名页面" in text and "新建一篇页面" in text
             assert "34f4f127-954e-80ec-a245-dd274f101fff" in text
+            assert msg.reply_text.call_args.kwargs["reply_markup"].inline_keyboard[0][0].text == "新建页面"
+        finally:
+            await app.close()
+
+    asyncio.run(run())
+
+
+def test_saved_article_can_open_the_old_page_or_create_another(tmp_path: Path) -> None:
+    async def run() -> None:
+        app = App(settings(tmp_path, notion_credentials_key=SecretStr("x" * 32)))
+        assert app.secrets
+        key = app.pending.put(1, 1, article(), (), {})
+        stored = app.pending.get(1, 1, key)
+        assert stored
+        target = "34f4f127-954e-80ec-a245-dd274f101fff"
+        app.secrets.put_credential(1, "fixture")
+        app.secrets.save_export(1, stored[0].content_hash, target, {
+            "status": "sent", "url": "https://www.notion.so/old", "page_id": "22222222-2222-4222-8222-222222222222",
+        })
+        app.notion = cast(Any, SimpleNamespace(
+            target=lambda *_args: {"id": target, "title": "父页面", "kind": "page"},
+            schema=AsyncMock(return_value={}),
+        ))
+        msg = message()
+        try:
+            await app.request_save(1, msg, key)
+            text = msg.reply_text.call_args.args[0]
+            keyboard = msg.reply_text.call_args.kwargs["reply_markup"].inline_keyboard
+            assert "已经保存过" in text and "再新建一篇" in text
+            assert keyboard[0][0].url == "https://www.notion.so/old"
+            assert keyboard[1][0].text == "新建一篇"
         finally:
             await app.close()
 

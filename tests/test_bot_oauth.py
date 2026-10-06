@@ -181,7 +181,7 @@ def test_confirmation_is_bound_one_use_and_keeps_selected_target(tmp_path: Path)
         )
         await app.callback(None, query)
         await app.callback(None, query)
-        cast(Any, app.save).assert_awaited_once_with(1, query.message, key, "fixed-target")
+        cast(Any, app.save).assert_awaited_once_with(1, query.message, key, "fixed-target", force_new=False)
         await app.close()
 
     asyncio.run(run())

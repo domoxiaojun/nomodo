@@ -120,6 +120,7 @@ class NotionService:
         *,
         leases: tuple[str, ...] = (),
         derived: dict[str, Any] | None = None,
+        force_new: bool = False,
     ) -> dict[str, Any]:
         async with self.lock(user_id):
             client = self.client(user_id)
@@ -134,8 +135,21 @@ class NotionService:
                     job.update(article=snapshot.model_dump(mode="json"), derived=derived or {})
                     self.store.save_export(user_id, article.content_hash, target_id, job)
                 recreated = False
-                if job and job["status"] == "sent":
-                    page_id = str(job.get("page_id") or "")
+                fresh = False
+                if job and (job["status"] == "unknown" or job.get("in_flight")):
+                    raise NotionError("write_outcome_unknown")
+                page_id = str(job.get("page_id") or "") if job else ""
+                if force_new and job and page_id:
+                    kept = True
+                    if job.get("status") == "sent":
+                        try:
+                            kept = await current_page(client, page_id) is not None
+                        except NotionError:
+                            kept = True
+                    forget_page(job)
+                    fresh, recreated = kept, not kept
+                    self.store.save_export(user_id, article.content_hash, target_id, job)
+                elif job and job["status"] == "sent":
                     alive = await current_page(client, page_id) if page_id else None
                     if alive is not None:
                         url = alive.get("url")
@@ -148,8 +162,6 @@ class NotionService:
                     forget_page(job)
                     recreated = True
                     self.store.save_export(user_id, article.content_hash, target_id, job)
-                if job and (job["status"] == "unknown" or job.get("in_flight")):
-                    raise NotionError("write_outcome_unknown")
                 if job:
                     derived = job.get("derived", derived or {})
                 info = await client.target(target_id, target["kind"])
@@ -226,6 +238,8 @@ class NotionService:
                     raise NotionError("page_url_unavailable")
                 job.update(status="sent", error=None)
                 self.store.save_export(user_id, article.content_hash, target_id, job)
+                if fresh:
+                    return {**job, "fresh": True}
                 return {**job, "recreated": True} if recreated else job
             except BaseException as error:
                 if job and job["status"] != "sent":
