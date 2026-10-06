@@ -19,7 +19,7 @@ from pyrogram.types import BotCommand, InlineKeyboardButton, InlineKeyboardMarku
 
 from simpread.config import Settings
 from simpread.domain import Article
-from simpread.integrations.notion import NotionError, NotionService, NotionStore
+from simpread.integrations.notion import WORKSPACE, NotionError, NotionService, NotionStore
 from simpread.integrations.notion.client import notion_id
 from simpread.integrations.openai import ActionPlan, Executor, LLMError, ResponsesClient
 from simpread.integrations.openai.client import sanitize
@@ -88,6 +88,18 @@ MESSAGES = {
     "legacy_export_snapshot_missing": "旧任务缺少文章快照。请重新解析原文章并尝试保存，再按任务 ID 恢复。",
     "permission_denied": "当前 Notion 资源无访问权限，授权仍保留。",
 }
+
+
+def sent_notion_export(secrets: Any, user_id: int, content_hash: str, target_id: str) -> dict[str, Any] | None:
+    if secrets is None:
+        return None
+    saved = secrets.export_status(user_id, content_hash, target_id)
+    if not isinstance(saved, dict) or saved.get("status") != "sent":
+        return None
+    url = saved.get("url")
+    if isinstance(url, str) and url.startswith("https://"):
+        return {"status": "sent", "url": url}
+    return None
 
 
 def notion_save_notice(result: dict[str, Any], *, with_url: bool = False) -> str:
@@ -582,6 +594,20 @@ class App:
                                   ]))
             return
         except NotionError as error:
+            refused = target_id == WORKSPACE and (
+                error.code == "permission_denied" or (error.code == "notion_request_failed" and error.status == 400)
+            )
+            if refused:
+                self.pending.preferences(user_id, {"notion_resume": {"key": key, "chat_id": message.chat.id}})
+                await progress.update(
+                    "当前授权不能直接新建独立页面。\n可以改成放到已有页面下面。",
+                    done=True,
+                    markup=buttons([
+                        [("放到已有页面下面", f"ui:{user_id}:targets")],
+                        [("查看原文", make_callback(key, "open"))],
+                    ]),
+                )
+                return
             retry = self.token_button(user_id, message.chat.id, "重新确认保存", "saveagain",
                                       {"kind": "continue_save", "key": key, "target": target_id})
             rows = ([[self.recovery_button(user_id, message, key, target_id)]]
@@ -606,6 +632,54 @@ class App:
         await progress.update(notice, done=True, markup=InlineKeyboardMarkup(saved_rows))
         # The article keeps its media lease so the user can retry or save to another target.
 
+    async def notion_save_choice(self, user_id: int, message: Any, article: Article) -> None:
+        title = article.title or "无标题"
+        saved = sent_notion_export(self.secrets, user_id, article.content_hash, WORKSPACE)
+        if saved:
+            text = (
+                f"这篇已经有独立页面\n\n文章：{title}\n"
+                "可以打开已有页面，再新建一篇独立页面，或放到已有页面下面。"
+            )
+        else:
+            text = (
+                f"保存这篇新文章\n\n文章：{title}\n"
+                "新建页面：在 Notion 里新建一篇独立页面。\n"
+                "放到已有页面下面：新页面会出现在所选页面或数据源里。"
+            )
+        rows: list[list[InlineKeyboardButton]] = []
+        if saved:
+            rows.append([InlineKeyboardButton("打开已有页面", url=str(saved["url"]))])
+        rows.extend([
+            [InlineKeyboardButton("新建页面", callback_data=f"ui:{user_id}:new_page")],
+            [InlineKeyboardButton("放到已有页面下面", callback_data=f"ui:{user_id}:targets")],
+            [InlineKeyboardButton("暂不保存", callback_data=f"ui:{user_id}:skip_save")],
+        ])
+        await reply(message, text, reply_markup=InlineKeyboardMarkup(rows))
+
+    async def confirm_workspace_page(self, user_id: int, message: Any, key: str, article: Article) -> None:
+        saved = sent_notion_export(self.secrets, user_id, article.content_hash, WORKSPACE)
+        self.pending.preferences(user_id, {"notion_resume": None})
+        if saved:
+            description = (
+                f"这篇已经保存过\n\n文章：{article.title or '无标题'}\n"
+                "可以打开已有的独立页面，或再新建一篇。原来的页面会保留。"
+            )
+            token = self.pending.approve(user_id, message.chat.id, {
+                "kind": "save", "key": key, "target": WORKSPACE, "force_new": True,
+            })
+            await reply(message, description, reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("打开已有页面", url=str(saved["url"]))],
+                [InlineKeyboardButton("新建一篇", callback_data=f"confirm:{token}"),
+                 InlineKeyboardButton("取消", callback_data=f"dismiss:{token}")],
+            ]))
+            return
+        await self.approval(
+            message,
+            user_id,
+            {"kind": "save", "key": key, "target": WORKSPACE},
+            f"确认保存到 Notion\n\n文章：{article.title or '无标题'}\n将新建一篇独立页面，不放到已有页面下面。",
+        )
+
     async def request_save(self, user_id: int, message: Any, key: str, target_id: str | None = None) -> None:
         _, article, _ = self.selected(user_id, message, key)
         self.pending.preferences(user_id, {"notion_resume": {"key": key, "chat_id": message.chat.id}})
@@ -614,6 +688,19 @@ class App:
         if self.secrets and not self.secrets.credential(user_id):
             await self.notion_command(user_id, message, ["connect"])
             return
+        if target_id == WORKSPACE:
+            await self.confirm_workspace_page(user_id, message, key, article)
+            return
+        if target_id is None:
+            default = None
+            try:
+                default = self.notion.target(user_id, None)
+            except NotionError:
+                default = None
+            if default is None or not sent_notion_export(self.secrets, user_id, article.content_hash, default["id"]):
+                await self.notion_save_choice(user_id, message, article)
+                return
+            target_id = default["id"]
         try:
             target = self.notion.target(user_id, target_id)
         except NotionError:
@@ -622,9 +709,9 @@ class App:
         missing = await self.notion.schema(user_id, target["id"])
         self.pending.preferences(user_id, {"notion_resume": None})
         place = target.get("title") or "未命名页面"
-        saved = self.secrets.export_status(user_id, article.content_hash, target["id"]) if self.secrets else None
+        saved = sent_notion_export(self.secrets, user_id, article.content_hash, target["id"])
         saved_url = str((saved or {}).get("url") or "")
-        if saved and saved.get("status") == "sent" and saved_url.startswith("https://"):
+        if saved and saved_url.startswith("https://"):
             description = (
                 f"这篇已经保存过\n\n文章：{article.title or '无标题'}\n位置：{place}\n"
                 "可以打开已有页面，或再新建一篇。原来的页面会保留。"
@@ -1158,20 +1245,29 @@ class App:
         if nav:
             rows.append(nav)
         rows.append([('刷新位置', f'ui:{user_id}:targets'), ('Notion 设置', f'ui:{user_id}:notion')])
-        if self.pending.preferences(user_id).get('notion_resume'):
+        resuming = bool(self.pending.preferences(user_id).get('notion_resume'))
+        if resuming:
+            rows.insert(0, [('新建页面', f'ui:{user_id}:new_page')])
             rows.append([('暂不保存', f'ui:{user_id}:skip_save')])
-        await reply(message, '选择 Notion 保存位置\n点击一个页面或数据源。' if values else
-                    '暂无可保存的位置。\n请在 Notion 中把目标页面授权给此 Integration，再重新加载。',
-                    reply_markup=buttons(rows))
+        if resuming and values:
+            text = '放到已有页面下面\n新页面会出现在所选页面或数据源里。也可以直接新建一篇独立页面。'
+        elif resuming:
+            text = '暂无可保存的位置。\n可以新建一篇独立页面，或在 Notion 中授权页面后再加载。'
+        elif values:
+            text = '选择 Notion 保存位置\n点击一个页面或数据源。'
+        else:
+            text = '暂无可保存的位置。\n请在 Notion 中把目标页面授权给此 Integration，再重新加载。'
+        await reply(message, text, reply_markup=buttons(rows))
 
     async def select_notion_target(self, user_id: int, message: Any, target_id: str) -> None:
         if not self.secrets:
             raise NotionError("authorization_required")
-        self.secrets.select(user_id, notion_id(target_id))
+        chosen = notion_id(target_id)
+        self.secrets.select(user_id, chosen)
         resume = self.pending.preferences(user_id).get("notion_resume") or {}
         if (resume.get("chat_id") == message.chat.id
                 and self.pending.get(user_id, message.chat.id, resume.get("key", ""))):
-            await self.request_save(user_id, message, resume["key"])
+            await self.request_save(user_id, message, resume["key"], chosen)
             return
         self.pending.preferences(user_id, {"notion_resume": None})
         await reply(message, "保存位置已设置。\n现在发送一个链接，或从最近文章选择要保存的内容。",
@@ -1248,6 +1344,13 @@ class App:
             await self.notion_command(user_id, panel, ['connect'] if action == 'connect' else [])
         elif action == 'targets':
             await self.notion_targets(user_id, panel, max(0, int(arg or 0)))
+        elif action == 'new_page':
+            resume = self.pending.preferences(user_id).get('notion_resume') or {}
+            article_key = str(resume.get('key') or '')
+            if resume.get('chat_id') != message.chat.id or not self.pending.get(user_id, message.chat.id, article_key):
+                raise ValueError('expired')
+            key, article, _ = self.selected(user_id, message, article_key)
+            await self.confirm_workspace_page(user_id, panel, key, article)
         elif action == 'target' and self.secrets:
             await self.select_notion_target(user_id, panel, arg)
         else:

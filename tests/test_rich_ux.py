@@ -282,10 +282,11 @@ def test_save_confirmation_says_a_new_child_page_will_be_created(tmp_path: Path)
         ))
         msg = message()
         try:
-            await app.request_save(1, msg, key)
+            target = "34f4f127-954e-80ec-a245-dd274f101fff"
+            await app.request_save(1, msg, key, target)
             text = msg.reply_text.call_args.args[0]
             assert "未命名页面" in text and "新建一篇页面" in text
-            assert "34f4f127-954e-80ec-a245-dd274f101fff" in text
+            assert target in text
             assert msg.reply_text.call_args.kwargs["reply_markup"].inline_keyboard[0][0].text == "新建页面"
         finally:
             await app.close()
@@ -317,6 +318,86 @@ def test_saved_article_can_open_the_old_page_or_create_another(tmp_path: Path) -
             assert "已经保存过" in text and "再新建一篇" in text
             assert keyboard[0][0].url == "https://www.notion.so/old"
             assert keyboard[1][0].text == "新建一篇"
+        finally:
+            await app.close()
+
+    asyncio.run(run())
+
+
+def test_first_save_can_choose_a_new_page(tmp_path: Path) -> None:
+    async def run() -> None:
+        app = App(settings(tmp_path, notion_credentials_key=SecretStr("x" * 32)))
+        assert app.secrets and app.notion
+        app.secrets.put_credential(1, "fixture")
+        key = app.pending.put(1, 1, article(), (), {})
+        export_page = AsyncMock()
+        cast(Any, app.notion).export_page = export_page
+        msg = message()
+        try:
+            await app.request_save(1, msg, key)
+            text = msg.reply_text.call_args.args[0]
+            labels = [button.text for row in msg.reply_text.call_args.kwargs["reply_markup"].inline_keyboard
+                      for button in row]
+            assert "保存这篇新文章" in text and labels[:3] == ["新建页面", "放到已有页面下面", "暂不保存"]
+            assert app.pending.preferences(1)["notion_resume"]["key"] == key
+            await app.menu_action(1, msg, "ui:1:new_page")
+            confirm = msg.edit_text.call_args.args[0]
+            assert "独立页面" in confirm and "不放到已有页面下面" in confirm
+            nonce = msg.edit_text.call_args.kwargs["reply_markup"].inline_keyboard[0][0].callback_data.split(":")[1]
+            payload = app.pending.consume(1, 1, nonce)
+            assert payload and payload["target"] == "workspace" and payload["key"] == key
+            assert not payload.get("force_new")
+            export_page.assert_not_awaited()
+        finally:
+            await app.close()
+
+    asyncio.run(run())
+
+
+def test_save_parent_list_offers_a_new_page_only_while_saving(tmp_path: Path) -> None:
+    async def run() -> None:
+        app = App(settings(tmp_path, notion_credentials_key=SecretStr("x" * 32)))
+        assert app.secrets and app.notion
+        app.secrets.put_credential(1, "fixture")
+        parent = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+        cast(Any, app.notion).targets = AsyncMock(return_value=[
+            {"id": parent, "title": "", "kind": "page", "default": False},
+        ])
+        try:
+            settings_list = message()
+            await app.notion_targets(1, settings_list)
+            keyboard = settings_list.reply_text.call_args.kwargs["reply_markup"].inline_keyboard
+            setting_labels = [button.text for row in keyboard for button in row]
+            assert "新建页面" not in setting_labels and "未命名页面 · 页面" in setting_labels
+            assert "选择 Notion 保存位置" in settings_list.reply_text.call_args.args[0]
+            key = app.pending.put(1, 1, article(), (), {})
+            app.pending.preferences(1, {"notion_resume": {"key": key, "chat_id": 1}})
+            saving = message()
+            await app.notion_targets(1, saving)
+            rows = saving.reply_text.call_args.kwargs["reply_markup"].inline_keyboard
+            assert rows[0][0].text == "新建页面" and rows[0][0].callback_data == "ui:1:new_page"
+            assert "放到已有页面下面" in saving.reply_text.call_args.args[0]
+            assert "未命名页面 · 页面" in rows[1][0].text
+        finally:
+            await app.close()
+
+    asyncio.run(run())
+
+
+def test_workspace_permission_offers_an_existing_parent(tmp_path: Path) -> None:
+    from simpread.integrations.notion import NotionError
+    async def run() -> None:
+        app = App(settings(tmp_path, notion_credentials_key=SecretStr("x" * 32)))
+        key = app.pending.put(1, 1, article(), (), {})
+        app.notion = cast(Any, SimpleNamespace(export_page=AsyncMock(
+            side_effect=NotionError("permission_denied", 403))))
+        msg = message()
+        try:
+            await app.save(1, msg, key, "workspace")
+            edited = msg.reply_text.return_value.edit_text.call_args
+            assert "不能直接新建独立页面" in edited.args[0]
+            assert edited.kwargs["reply_markup"].inline_keyboard[0][0].text == "放到已有页面下面"
+            assert app.pending.preferences(1)["notion_resume"]["key"] == key
         finally:
             await app.close()
 

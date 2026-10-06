@@ -193,7 +193,7 @@ def mapping(schema: Json, existing: Json) -> tuple[Json, Json]:
 
 def properties(article: Article, target: Json, info: Json, derived: Json) -> Json:
     title = {"title": rt((article.title or "Untitled")[:900])}
-    if target["kind"] == "page":
+    if target["kind"] in {"page", "workspace"}:
         return {"title": title}
     names, missing = mapping(info["properties"], target.get("mapping", {}))
     if missing:

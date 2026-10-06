@@ -9,7 +9,7 @@ import pytest
 from PIL import Image
 
 from simpread.domain import normalize_worker_result
-from simpread.integrations.notion import NotionClient, NotionError, NotionService, NotionStore
+from simpread.integrations.notion import WORKSPACE, NotionClient, NotionError, NotionService, NotionStore
 from simpread.integrations.notion.blocks import FIELDS, article_blocks, batches
 from simpread.integrations.notion.media import upload_media
 
@@ -174,6 +174,59 @@ def test_force_new_creates_another_page_beside_the_live_one(tmp_path: Path) -> N
             assert stored["page_id"] == NEW and "fresh" not in stored
             again = await service.export_page(1, value, TARGET)
             assert again["reused"] is True and creates == [PAGE, NEW]
+        finally:
+            store.close()
+
+    asyncio.run(run())
+
+
+def test_workspace_page_is_created_without_a_parent(tmp_path: Path) -> None:
+    parents: list[dict[str, Any]] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        path = req.url.path.rstrip("/")
+        if req.method == "POST" and path.endswith("/pages"):
+            body = json.loads(req.content)
+            parents.append(body["parent"])
+            assert body["properties"]["title"]["title"][0]["text"]["content"] == "Note"
+            return httpx.Response(200, json={"id": PAGE, "url": "https://www.notion.so/standalone"})
+        if req.method == "GET" and path.endswith("/pages/" + PAGE):
+            return httpx.Response(200, json={"id": PAGE, "url": "https://www.notion.so/standalone"})
+        if req.method == "PATCH":
+            return httpx.Response(200, json={})
+        raise AssertionError(f"{req.method} {path}")
+
+    async def run() -> None:
+        service, store = notion_service(tmp_path, handler)
+        value = note()
+        try:
+            created = await service.export_page(1, value, WORKSPACE)
+            assert parents == [{"type": "workspace", "workspace": True}]
+            assert created["page_id"] == PAGE and created["url"].endswith("/standalone")
+            stored = store.export_status(1, value.content_hash, WORKSPACE) or {}
+            assert stored["status"] == "sent" and stored["page_id"] == PAGE
+            again = await service.export_page(1, value, WORKSPACE)
+            assert again["reused"] is True and len(parents) == 1
+        finally:
+            store.close()
+
+    asyncio.run(run())
+
+
+def test_workspace_permission_does_not_mark_the_page_sent(tmp_path: Path) -> None:
+    def handler(req: httpx.Request) -> httpx.Response:
+        if req.method == "POST" and req.url.path.rstrip("/").endswith("/pages"):
+            return httpx.Response(403, json={"object": "error", "status": 403})
+        raise AssertionError(req.url.path)
+
+    async def run() -> None:
+        service, store = notion_service(tmp_path, handler)
+        value = note()
+        try:
+            with pytest.raises(NotionError, match="permission_denied"):
+                await service.export_page(1, value, WORKSPACE)
+            stored = store.export_status(1, value.content_hash, WORKSPACE) or {}
+            assert stored["status"] == "failed" and stored["page_id"] == "" and not stored["in_flight"]
         finally:
             store.close()
 

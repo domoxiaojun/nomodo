@@ -16,6 +16,8 @@ from .media import upload_media
 from .store import NotionStore
 from .tree import nested, recover_tree, write_tree
 
+WORKSPACE = "workspace"
+
 
 async def current_page(client: NotionClient, page_id: str) -> dict[str, Any] | None:
     """Return a page that can still be opened, or None when it was deleted or trashed."""
@@ -36,6 +38,14 @@ def forget_page(job: dict[str, Any]) -> None:
     job.update(page_id="", url="", status="pending", in_flight=False, next_batch=0, error=None)
 
 
+def page_parent(target: dict[str, Any]) -> dict[str, Any]:
+    """Parent object for one new page. A workspace page is not nested under another page."""
+    if target["kind"] == "workspace":
+        return {"type": "workspace", "workspace": True}
+    key = "page_id" if target["kind"] == "page" else "data_source_id"
+    return {"type": key, key: target["id"]}
+
+
 class NotionService:
     def __init__(
         self, store: NotionStore, worker: WorkerClient, factory: Callable[[str], NotionClient] = NotionClient
@@ -53,6 +63,8 @@ class NotionService:
         return self.factory(credential[0])
 
     def target(self, user_id: int, target_id: str | None = None) -> dict[str, Any]:
+        if target_id == WORKSPACE:
+            return {"id": WORKSPACE, "title": "新页面", "kind": "workspace", "default": False, "mapping": {}}
         target = next(
             (t for t in self.store.targets(user_id) if (t["id"] == target_id if target_id else t.get("default"))), None
         )
@@ -93,6 +105,8 @@ class NotionService:
             await client.close()
 
     async def schema(self, user_id: int, target_id: str, *, add: bool = False) -> dict[str, Any]:
+        if target_id == WORKSPACE:
+            return {}
         async with self.lock(user_id):
             target = self.target(user_id, target_id)
             client = self.client(user_id)
@@ -164,7 +178,10 @@ class NotionService:
                     self.store.save_export(user_id, article.content_hash, target_id, job)
                 if job:
                     derived = job.get("derived", derived or {})
-                info = await client.target(target_id, target["kind"])
+                if target["kind"] == "workspace":
+                    info: dict[str, Any] = {}
+                else:
+                    info = await client.target(target_id, target["kind"])
                 props = properties(article, target, info, derived or {})
                 if not job:
                     marker = hashlib.sha256(f"{user_id}:{article.content_hash}:{target_id}".encode()).hexdigest()
@@ -196,16 +213,16 @@ class NotionService:
                     self.store.save_export(user_id, article.content_hash, target_id, job)
                     for attempt in range(2):
                         try:
-                            parent = "page_id" if target["kind"] == "page" else "data_source_id"
                             page = await client.create_page(
-                                {"type": parent, parent: target_id}, props, text_blocks(job["marker"])
+                                page_parent(target), props, text_blocks(job["marker"])
                             )
                             break
                         except NotionError as error:
                             if error.code != "conflict" or attempt:
                                 raise
-                            info = await client.target(target_id, target["kind"])
-                            props = properties(article, target, info, derived or {})
+                            if target["kind"] != "workspace":
+                                info = await client.target(target_id, target["kind"])
+                                props = properties(article, target, info, derived or {})
                     job.update(
                         page_id=notion_id(page["id"]), url=page.get("url", ""), in_flight=False, status="partial"
                     )
@@ -229,7 +246,8 @@ class NotionService:
                             except NotionError as error:
                                 if error.code != "conflict" or attempt:
                                     raise
-                                await client.target(target_id, target["kind"])
+                                if target["kind"] != "workspace":
+                                    await client.target(target_id, target["kind"])
                         job.update(next_batch=index + 1, in_flight=False)
                         self.store.save_export(user_id, article.content_hash, target_id, job)
                 if not job["url"]:
@@ -276,9 +294,14 @@ class NotionService:
                 page_id = notion_id(page_id)
                 info = await client.target(page_id, "page")
                 parent = info.get("parent", {})
-                key = "page_id" if target["kind"] == "page" else "data_source_id"
-                if parent.get(key) != target_id:
-                    raise NotionError("recovery_target_mismatch")
+                if target["kind"] == "workspace":
+                    standalone = parent.get("type") == "workspace" or parent.get("workspace") is True
+                    if not standalone:
+                        raise NotionError("recovery_target_mismatch")
+                else:
+                    key = "page_id" if target["kind"] == "page" else "data_source_id"
+                    if parent.get(key) != target_id:
+                        raise NotionError("recovery_target_mismatch")
                 blocks = await client.children(page_id)
                 text = {
                     "".join(
