@@ -1234,9 +1234,13 @@ class App:
         values = await self.notion.targets(user_id)
         values.sort(key=lambda item: (not item.get("default", False), item.get("title", "")))
         offset = min(max(0, offset), max(0, ((len(values) - 1) // 8) * 8))
-        rows = [[(('✓ ' if t.get('default') else '') + truncate(t['title'] or '未命名页面', 32)
-                  + (' · 数据源' if t.get('kind') == 'data_source' else ' · 页面'), f"ui:{user_id}:target:{t['id']}")]
-                for t in values[offset:offset + 8]]
+        def place_label(target: dict[str, Any]) -> str:
+            kind = "数据源" if target.get("kind") == "data_source" else "页面"
+            name = target.get("title") or ("未命名数据库" if kind == "数据源" else "未命名页面")
+            mark = "✓ " if target.get("default") else ""
+            return mark + truncate(str(name), 32) + f" · {kind}"
+
+        rows = [[(place_label(t), f"ui:{user_id}:target:{t['id']}")] for t in values[offset:offset + 8]]
         nav = []
         if offset:
             nav.append(('上一页', f'ui:{user_id}:targets:{max(0, offset - 8)}'))
@@ -1250,13 +1254,19 @@ class App:
             rows.insert(0, [('新建页面', f'ui:{user_id}:new_page')])
             rows.append([('暂不保存', f'ui:{user_id}:skip_save')])
         if resuming and values:
-            text = '放到已有页面下面\n新页面会出现在所选页面或数据源里。也可以直接新建一篇独立页面。'
+            text = (
+                "放到已有页面下面\n新页面会出现在所选页面或数据源里。"
+                "数据库中的行和没有标题的页面已隐藏。也可以直接新建一篇独立页面。"
+            )
         elif resuming:
-            text = '暂无可保存的位置。\n可以新建一篇独立页面，或在 Notion 中授权页面后再加载。'
+            text = "暂无可保存的位置。\n可以新建一篇独立页面，或在 Notion 中授权一个有标题的页面后再加载。"
         elif values:
-            text = '选择 Notion 保存位置\n点击一个页面或数据源。'
+            text = "选择 Notion 保存位置\n点击一个页面或数据源。数据库中的行和没有标题的页面已隐藏。"
         else:
-            text = '暂无可保存的位置。\n请在 Notion 中把目标页面授权给此 Integration，再重新加载。'
+            text = (
+                "暂无可保存的位置。\n请在 Notion 中把有标题的页面授权给此 Integration，再重新加载。"
+                "数据库中的行不会出现在这里。"
+            )
         await reply(message, text, reply_markup=buttons(rows))
 
     async def select_notion_target(self, user_id: int, message: Any, target_id: str) -> None:

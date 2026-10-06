@@ -46,6 +46,49 @@ def page_parent(target: dict[str, Any]) -> dict[str, Any]:
     return {"type": key, key: target["id"]}
 
 
+def rich_text(value: Any) -> str:
+    if isinstance(value, dict):
+        value = value.get("results", [])
+    if not isinstance(value, list):
+        return ""
+    parts: list[str] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        text = item.get("plain_text")
+        if not isinstance(text, str):
+            nested = item.get("text")
+            content = nested.get("content") if isinstance(nested, dict) else ""
+            text = content if isinstance(content, str) else ""
+        parts.append(text)
+    return "".join(parts)
+
+
+def location_title(item: dict[str, Any]) -> str:
+    if item.get("object") == "page":
+        properties = item.get("properties")
+        if isinstance(properties, dict):
+            for prop in properties.values():
+                if isinstance(prop, dict) and prop.get("type") == "title":
+                    return rich_text(prop.get("title")).strip()
+        return ""
+    return rich_text(item.get("title")).strip()
+
+
+def listed_location(item: dict[str, Any]) -> bool:
+    """Save locations are titled pages and databases, not rows inside a database."""
+    if item.get("object") not in {"page", "data_source"}:
+        return False
+    if item.get("in_trash") or item.get("archived") or item.get("is_archived"):
+        return False
+    parent = item.get("parent")
+    if not isinstance(parent, dict):
+        parent = {}
+    if item.get("object") == "page" and parent.get("type") in {"data_source_id", "database_id"}:
+        return False
+    return item.get("object") == "data_source" or bool(location_title(item))
+
+
 class NotionService:
     def __init__(
         self, store: NotionStore, worker: WorkerClient, factory: Callable[[str], NotionClient] = NotionClient
@@ -78,18 +121,12 @@ class NotionService:
             old = {t["id"]: t for t in self.store.targets(user_id)}
             output = []
             for item in await client.search():
-                if item.get("object") not in {"page", "data_source"}:
+                if not listed_location(item):
                     continue
-                target_id = notion_id(item["id"])
-                title = item.get("title", [])
-                if item["object"] == "page":
-                    title = next(
-                        (p.get("title", []) for p in item.get("properties", {}).values() if p.get("type") == "title"),
-                        [],
-                    )
+                target_id = notion_id(str(item.get("id") or ""))
                 value = {
                     "id": target_id,
-                    "title": "".join(str(t.get("plain_text") or t.get("text", {}).get("content", "")) for t in title),
+                    "title": location_title(item),
                     "kind": item["object"],
                     "default": old.get(target_id, {}).get("default", False),
                     "mapping": old.get(target_id, {}).get("mapping", {}),

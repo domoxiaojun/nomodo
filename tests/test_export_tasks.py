@@ -135,7 +135,10 @@ def test_target_refresh_removes_stale_only_after_complete_success(tmp_path: Path
         def handler(req: httpx.Request) -> httpx.Response:
             if failing:
                 return httpx.Response(200, json={"results": [], "has_more": True, "next_cursor": None})
-            return httpx.Response(200, json={"results": [{"object": "page", "id": TARGET}], "has_more": False})
+            titled = {"object": "page", "id": TARGET, "properties": {
+                "title": {"type": "title", "title": [{"plain_text": "收件箱"}]},
+            }}
+            return httpx.Response(200, json={"results": [titled], "has_more": False})
 
         service = NotionService(store, Worker(), lambda token: NotionClient(token, httpx.MockTransport(handler)))  # type: ignore[arg-type]
         with pytest.raises(NotionError):

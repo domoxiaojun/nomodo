@@ -338,6 +338,43 @@ def test_auth_expiry_is_distinct_from_resource_permissions(tmp_path: Path, statu
     asyncio.run(run())
 
 
+def test_database_rows_and_untitled_pages_are_not_save_locations(tmp_path: Path) -> None:
+    row = "44444444-4444-4444-8444-444444444444"
+    named_row = "55555555-5555-4555-8555-555555555555"
+    trash = "66666666-6666-4666-8666-666666666666"
+    blank = "77777777-7777-4777-8777-777777777777"
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        assert req.method == "POST" and req.url.path.rstrip("/").endswith("/search")
+        return httpx.Response(200, json={"results": [
+            {"object": "page", "id": row, "parent": {"type": "data_source_id", "data_source_id": PAGE},
+             "properties": {"Name": {"type": "title", "title": []}}},
+            {"object": "page", "id": named_row, "parent": {"type": "database_id", "database_id": PAGE},
+             "properties": {"Name": {"type": "title", "title": [{"plain_text": "有标题的行"}]}}},
+            {"object": "page", "id": trash, "in_trash": True, "parent": {"type": "workspace", "workspace": True},
+             "properties": {"title": {"type": "title", "title": [{"plain_text": "回收站"}]}}},
+            {"object": "page", "id": blank, "parent": {"type": "page_id", "page_id": TARGET},
+             "properties": {"title": {"type": "title", "title": []}}},
+            {"object": "page", "id": TARGET, "parent": {"type": "workspace", "workspace": True},
+             "properties": {"title": {"type": "title", "title": [{"plain_text": "收件箱"}]}}},
+            {"object": "data_source", "id": PAGE, "title": []},
+        ], "has_more": False})
+
+    async def run() -> None:
+        service, store = notion_service(tmp_path, handler)
+        store.save_target(1, {"id": TARGET, "kind": "page", "title": "父页面", "default": False})
+        store.save_target(1, {"id": row, "kind": "page", "title": "", "default": True})
+        try:
+            found = await service.targets(1)
+        finally:
+            store.close()
+        assert [item["id"] for item in found] == [TARGET, PAGE]
+        assert found[0]["title"] == "收件箱" and found[0]["default"] is False
+        assert found[1]["kind"] == "data_source" and found[1]["title"] == ""
+
+    asyncio.run(run())
+
+
 def test_schema_confirmation_and_mapping(tmp_path: Path) -> None:
     async def run() -> None:
         schema = {"Name": {"type": "title"}}
